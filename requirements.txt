@@ -11,3 +11,11 @@ altair
 scipy
 plotly
 mplfinance
+streamlit>=1.30.0
+pandas>=2.1.0
+numpy>=1.26.0
+plotly>=5.17.0
+yfinance>=0.2.31
+mplfinance>=0.12.10b0
+requests>=2.31.0
+beautifulsoup4>=4.12.0
