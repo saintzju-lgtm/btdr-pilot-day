@@ -6,8 +6,9 @@ import yfinance as yf
 from datetime import datetime, timedelta
 import time
 import random
+import pkg_resources
 
-# ---------------------- 全局配置 & 自动刷新 ----------------------
+# ---------------------- 全局配置 & 版本兼容处理 ----------------------
 st.set_page_config(
     page_title="BTDR 实时分析平台",
     page_icon="📊",
@@ -15,18 +16,29 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# 10秒自动刷新（仅在非侧边栏交互时生效）
-if "refresh_trigger" not in st.session_state:
-    st.session_state.refresh_trigger = 0
-st.session_state.refresh_trigger += 1
-if st.session_state.refresh_trigger % 1 == 0:  # 确保每次渲染都检查刷新
-    st.autorefresh(interval=10000, key="auto_refresh")
+# 检查Streamlit版本，避免autorefresh报错
+def safe_autorefresh(interval=10000):
+    try:
+        # 版本判断：仅在≥1.28.0时启用autorefresh
+        st_version = pkg_resources.get_distribution("streamlit").version
+        major, minor, patch = map(int, st_version.split("."))
+        if major >= 1 and minor >= 28:
+            st.autorefresh(interval=interval, key="auto_refresh")
+            return True
+        else:
+            return False
+    except:
+        # 版本获取失败/函数不存在，返回False
+        return False
+
+# 尝试启用自动刷新（失败则用手动刷新）
+auto_refresh_enabled = safe_autorefresh(10000)
 
 # 固定随机种子（模拟数据兜底用）
 np.random.seed(42)
 
-# ---------------------- 真实数据请求（带限流容错） ----------------------
-@st.cache_data(ttl=5)  # 缓存5秒，减少10秒刷新内的重复请求
+# ---------------------- 真实数据请求（缓存TTL=10秒，近似自动刷新） ----------------------
+@st.cache_data(ttl=10)  # 缓存10秒，近似自动刷新效果
 def get_real_stock_data(symbol="BTDR", period="1mo", interval="1d"):
     """获取真实数据，失败则返回模拟数据"""
     try:
@@ -127,15 +139,28 @@ def simulate_筹码峰(stock_data):
         "筹码占比": [v / total_volume * 100 for v in volume_distribution]
     })
 
-# ---------------------- 侧边栏导航 ----------------------
+# ---------------------- 侧边栏导航 + 手动刷新按钮 ----------------------
 st.sidebar.title("📊 BTDR 实时分析平台")
 st.sidebar.caption(f"最后刷新：{datetime.now().strftime('%H:%M:%S')}")
+
+# 手动刷新按钮（兼容旧版本）
+if st.sidebar.button("🔄 手动刷新数据", type="primary"):
+    # 清空缓存并重新请求
+    get_real_stock_data.clear()
+    st.rerun()
+
+# 刷新提示
+if auto_refresh_enabled:
+    st.sidebar.info("✅ 10秒自动刷新已启用")
+else:
+    st.sidebar.info("ℹ️ 自动刷新未支持，点击按钮手动刷新（缓存10秒）")
+
 menu_option = st.sidebar.radio(
     "选择功能模块",
     ["核心数据总览", "股价&VWAP分析", "筹码峰联动", "投资工具", "财务&运营数据", "风险提示"]
 )
 
-# ---------------------- 核心数据总览（实时+10秒刷新） ----------------------
+# ---------------------- 核心数据总览（实时+缓存刷新） ----------------------
 if menu_option == "核心数据总览":
     st.title("BTDR 核心数据总览")
     st.divider()
@@ -181,7 +206,7 @@ if menu_option == "核心数据总览":
         st.dataframe(pd.DataFrame(fundamental["运营指标"]), use_container_width=True)
     
     # 实时股价走势
-    st.subheader("近30日股价走势（10秒自动刷新）")
+    st.subheader("近30日股价走势（缓存10秒刷新）")
     fig = go.Figure()
     fig.add_trace(go.Scatter(
         x=stock_data["Date"], 
@@ -264,9 +289,9 @@ elif menu_option == "股价&VWAP分析":
     latest_price = stock_data.iloc[-1]["Close"]
     latest_vwap = vwap_data.iloc[-1]["Institution_VWAP"]
     if latest_price > latest_vwap:
-        st.success("✅ 实时股价高于机构VWAP，短期强势（数据10秒刷新）")
+        st.success("✅ 实时股价高于机构VWAP，短期强势（缓存10秒刷新）")
     else:
-        st.warning("⚠️ 实时股价低于机构VWAP，短期弱势（数据10秒刷新）")
+        st.warning("⚠️ 实时股价低于机构VWAP，短期弱势（缓存10秒刷新）")
 
 # ---------------------- 筹码峰联动（实时） ----------------------
 elif menu_option == "筹码峰联动":
@@ -296,7 +321,7 @@ elif menu_option == "筹码峰联动":
         fig_chip.add_hline(y=latest_vwap, line_dash="dash", line_color="blue", annotation_text="机构VWAP")
         fig_chip.update_layout(height=400, xaxis_title="筹码占比(%)", yaxis_title="价格(美元)")
         st.plotly_chart(fig_chip, use_container_width=True)
-        st.write(f"📌 筹码主峰：${peak_price:.2f} | 机构VWAP：${latest_vwap:.2f}（10秒刷新）")
+        st.write(f"📌 筹码主峰：${peak_price:.2f} | 机构VWAP：${latest_vwap:.2f}（缓存10秒刷新）")
     
     with col2:
         st.subheader("实时股价+VWAP+筹码主峰")
@@ -322,7 +347,7 @@ elif menu_option == "投资工具":
     st.divider()
     
     # 成本测算（实时股价）
-    st.subheader("💰 持仓成本测算（10秒刷新）")
+    st.subheader("💰 持仓成本测算（缓存10秒刷新）")
     stock_data = get_real_stock_data()
     latest_price = stock_data.iloc[-1]["Close"]
     institution_vwap = calculate_institution_vwap(stock_data).iloc[-1]["Institution_VWAP"]
@@ -412,7 +437,7 @@ elif menu_option == "风险提示":
     ### 📝 免责声明
     1. 本页面实时股价数据来源于Yahoo Finance，财务/运营数据来源于公司公开披露，仅为分析参考，不构成任何投资建议；
     2. 模拟数据（如机构VWAP、筹码峰）为基于公开逻辑的估算，实际数据请以官方披露为准；
-    3. 10秒自动刷新仅为展示效果，真实市场数据更新频率以交易所为准；
+    3. 数据缓存10秒刷新，真实市场数据更新频率以交易所为准；
     4. 投资有风险，入市需谨慎，请勿根据本页面信息盲目决策，建议结合专业投资顾问意见。
     """)
     
@@ -424,6 +449,7 @@ elif menu_option == "风险提示":
         if submit_feedback:
             st.success("感谢你的反馈！我们会持续优化实时数据体验～")
 
-# ---------------------- 页脚（实时刷新提示） ----------------------
+# ---------------------- 页脚（刷新提示） ----------------------
 st.divider()
-st.write(f"📅 最后刷新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 🔄 10秒自动刷新 | 📈 数据来源：Yahoo Finance（真实）+ 公司披露")
+st.write(f"📅 最后刷新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 📈 数据来源：Yahoo Finance（真实）+ 公司披露")
+st.write(f"🔄 数据缓存时长：10秒 | {'✅ 自动刷新已启用' if auto_refresh_enabled else 'ℹ️ 点击侧边栏按钮手动刷新'}")
