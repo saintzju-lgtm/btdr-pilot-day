@@ -3,53 +3,35 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import yfinance as yf
-from mplfinance.original_flavor import candlestick_ohlc
-import matplotlib.dates as mdates
 from datetime import datetime, timedelta
-import requests
-from bs4 import BeautifulSoup
 import time
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
-# ---------------------- 全局配置 & 限流规避 ----------------------
-# 设置请求重试策略
-session = requests.Session()
-retry = Retry(
-    total=3,  # 重试3次
-    backoff_factor=0.5,  # 每次重试延迟0.5s
-    status_forcelist=[429, 500, 502, 503, 504]  # 针对限流/服务器错误重试
+# ---------------------- 全局配置（移除requests.Session，解决Yahoo API兼容问题） ----------------------
+st.set_page_config(
+    page_title="BTDR 综合分析平台",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
-session.mount("https://", HTTPAdapter(max_retries=retry))
 
-# 默认基础数据（兜底用，避免API失效崩溃）
+# 默认基础数据（兜底用）
 DEFAULT_STOCK_INFO = {
-    "marketCap": 2624000000,  # 默认市值
+    "marketCap": 2624000000,
     "symbol": "BTDR",
     "longName": "Bitdeer Technologies Group"
 }
 
-# ---------------------- 数据获取函数（修复限流问题） ----------------------
-@st.cache_data(ttl=86400)  # 延长缓存至24小时，减少请求频率
+# ---------------------- 数据获取函数（彻底修复Yahoo API + 模拟数据兜底） ----------------------
+@st.cache_data(ttl=86400)
 def get_btdr_stock_data(period="1mo", interval="1d"):
-    """获取BTDR股价数据（兼容限流，降级处理）"""
+    """获取BTDR股价数据（移除手动session，纯模拟数据兜底）"""
     try:
-        # 增加请求延迟，规避限流
-        time.sleep(0.5)
-        ticker = yf.Ticker("BTDR", session=session)
-        
-        # 优先获取历史数据（限流概率低）
+        # 移除手动session，让yfinance自动处理
+        ticker = yf.Ticker("BTDR")
         hist = ticker.history(period=period, interval=interval)
+        
         if hist.empty:
-            # 历史数据为空时生成模拟数据兜底
-            dates = pd.date_range(end=datetime.now(), periods=30, freq='D')
-            hist = pd.DataFrame({
-                "Open": np.random.uniform(10, 12, 30),
-                "High": np.random.uniform(10.5, 12.5, 30),
-                "Low": np.random.uniform(9.5, 11.5, 30),
-                "Close": np.random.uniform(10, 12, 30),
-                "Volume": np.random.randint(1000000, 5000000, 30)
-            }, index=dates)
+            raise Exception("Yahoo数据为空，切换模拟数据")
         
         hist.reset_index(inplace=True)
         hist["Date"] = pd.to_datetime(hist["Date"]).dt.date
@@ -62,15 +44,13 @@ def get_btdr_stock_data(period="1mo", interval="1d"):
         hist["CumVolPrice"] = (hist["Close"] * hist["Volume"]).cumsum()
         hist["VWAP"] = hist["CumVolPrice"] / hist["CumVol"]
         
-        # 避免调用ticker.info触发限流，改用默认值
-        stock_info = DEFAULT_STOCK_INFO
-        
-        return hist, stock_info
+        return hist, DEFAULT_STOCK_INFO
     
     except Exception as e:
-        # 所有异常都降级为模拟数据
+        # 所有异常直接用模拟数据，不再依赖Yahoo API
         st.warning(f"⚠️ 数据获取失败（{str(e)}），使用模拟数据展示")
-        # 生成模拟股价数据
+        # 生成稳定的模拟数据（固定随机种子，避免波动）
+        np.random.seed(42)  # 固定种子，保证数据稳定
         dates = pd.date_range(end=datetime.now(), periods=30, freq='D')
         hist = pd.DataFrame({
             "Date": dates.date,
@@ -92,21 +72,21 @@ def get_btdr_stock_data(period="1mo", interval="1d"):
 
 @st.cache_data(ttl=86400)
 def get_btdr_fundamental_data():
-    """获取BTDR财务&运营核心数据（静态数据，避免API请求）"""
+    """静态财务/运营数据（无外部请求）"""
     fundamental_data = {
         "财务指标": [
-            {"指标": "Q3 营收", "数值": "1.697亿美元", "同比": "+173.6%"},
-            {"指标": "Q3 毛利润", "数值": "4080万美元", "同比": "转正"},
-            {"指标": "调整后EBITDA", "数值": "4300万美元", "同比": "转正"},
-            {"指标": "净亏损", "数值": "2.667亿美元", "备注": "含非现金衍生品损失"},
-            {"指标": "总市值", "数值": "26.24亿美元", "更新时间": "2025-12-23"}
+            {"指标": "Q3 营收", "数值": "1.697亿美元", "同比": "+173.6%", "备注": None, "更新时间": None},
+            {"指标": "Q3 毛利润", "数值": "4080万美元", "同比": "转正", "备注": None, "更新时间": None},
+            {"指标": "调整后EBITDA", "数值": "4300万美元", "同比": "转正", "备注": None, "更新时间": None},
+            {"指标": "净亏损", "数值": "2.667亿美元", "同比": None, "备注": "含非现金衍生品损失", "更新时间": None},
+            {"指标": "总市值", "数值": "26.24亿美元", "同比": None, "备注": None, "更新时间": "2025-12-23"}
         ],
         "运营指标": [
-            {"指标": "自营算力（11月）", "数值": "45.7 EH/s", "同比": "+189%"},
-            {"指标": "BTC产出（11月）", "数值": "526 BTC", "同比": "+251%"},
-            {"指标": "BTC持仓", "数值": "2179 BTC", "备注": "长期持有"},
-            {"指标": "GPU利用率", "数值": "94%", "业务": "AI/HPC"},
-            {"指标": "AI云ARR", "数值": "1000万美元", "目标": "2026年20亿美元"}
+            {"指标": "自营算力（11月）", "数值": "45.7 EH/s", "同比": "+189%", "备注": None, "业务": None, "目标": None},
+            {"指标": "BTC产出（11月）", "数值": "526 BTC", "同比": "+251%", "备注": None, "业务": None, "目标": None},
+            {"指标": "BTC持仓", "数值": "2179 BTC", "同比": None, "备注": "长期持有", "业务": None, "目标": None},
+            {"指标": "GPU利用率", "数值": "94%", "同比": None, "备注": None, "业务": "AI/HPC", "目标": None},
+            {"指标": "AI云ARR", "数值": "1000万美元", "同比": None, "备注": None, "业务": None, "目标": "2026年20亿美元"}
         ],
         "核心产品": [
             {"产品": "SEALMINER A3", "状态": "量产中", "能效": "行业领先"},
@@ -117,7 +97,7 @@ def get_btdr_fundamental_data():
 
 @st.cache_data(ttl=86400)
 def calculate_institution_vwap(stock_data, period=30):
-    """计算机构VWAP（基于本地数据，无外部请求）"""
+    """计算机构VWAP（纯本地计算）"""
     stock_data = stock_data.tail(period).copy()
     stock_data["Institution_Vol"] = stock_data["Volume"] * 0.3
     stock_data["Institution_Price"] = stock_data["Close"] * (1 + np.random.uniform(-0.02, 0.02, len(stock_data)))
@@ -128,15 +108,25 @@ def calculate_institution_vwap(stock_data, period=30):
 
 @st.cache_data(ttl=86400)
 def simulate_筹码峰(stock_data, period=30):
-    """模拟筹码峰数据（纯本地计算）"""
-    price_range = np.linspace(stock_data["Close"].min() * 0.9, stock_data["Close"].max() * 1.1, 50)
+    """模拟筹码峰数据（修复空值/除零问题）"""
+    stock_data = stock_data.tail(period).copy()
+    price_min = stock_data["Close"].min() * 0.9
+    price_max = stock_data["Close"].max() * 1.1
+    price_range = np.linspace(price_min, price_max, 50)
     volume_distribution = []
+    
     for price in price_range:
-        volume = stock_data[(stock_data["Close"] >= price * 0.98) & (stock_data["Close"] <= price * 1.02)]["Volume"].sum()
+        mask = (stock_data["Close"] >= price * 0.98) & (stock_data["Close"] <= price * 1.02)
+        volume = stock_data.loc[mask, "Volume"].sum() if mask.any() else 0
         volume_distribution.append(volume)
+    
+    # 避免除零
+    total_volume = sum(volume_distribution) + 1e-8
+    筹码占比 = [v / total_volume * 100 for v in volume_distribution]
+    
     筹码峰_data = pd.DataFrame({
         "价格": price_range,
-        "筹码占比": [v / (sum(volume_distribution) + 1e-8) * 100 for v in volume_distribution]  # 避免除零
+        "筹码占比": 筹码占比
     })
     return 筹码峰_data
 
@@ -159,52 +149,82 @@ if menu_option == "核心数据总览":
     st.title("BTDR 核心数据总览")
     st.divider()
 
-    # 1. 实时股价卡片
+    # 1. 核心指标卡片
     stock_data, stock_info = get_btdr_stock_data()
     latest_data = stock_data.iloc[-1]
     col1, col2, col3 = st.columns(3)
+    
     with col1:
+        delta_price = latest_data["Close"] - latest_data["Open"]
+        delta_pct = (delta_price / latest_data["Open"]) * 100
         st.metric(
             label="当前股价",
             value=f"${latest_data['Close']:.2f}",
-            delta=f"{(latest_data['Close'] - latest_data['Open']):.2f} ({((latest_data['Close'] - latest_data['Open'])/latest_data['Open']*100):.2f}%)"
+            delta=f"{delta_price:.2f} ({delta_pct:.2f}%)"
         )
+    
     with col2:
         institution_vwap_data = calculate_institution_vwap(stock_data)
         latest_vwap = institution_vwap_data.iloc[-1]["Institution_VWAP"]
+        delta_vwap = latest_data["Close"] - latest_vwap
+        delta_vwap_pct = (delta_vwap / latest_vwap) * 100
         st.metric(
             label="机构VWAP（30日）",
             value=f"${latest_vwap:.2f}",
-            delta=f"{(latest_data['Close'] - latest_vwap):.2f} ({((latest_data['Close'] - latest_vwap)/latest_vwap*100):.2f}%)"
+            delta=f"{delta_vwap:.2f} ({delta_vwap_pct:.2f}%)"
         )
+    
     with col3:
+        market_cap = stock_info.get("marketCap", 2624000000)
         st.metric(
             label="市值",
-            value=f"${stock_info.get('marketCap', 2624000000)/1e8:.2f}亿",
+            value=f"${market_cap/1e8:.2f}亿",
             help="数据更新至最近交易日"
         )
 
-    # 2. 核心指标矩阵
+    # 2. 关键指标速览
     st.subheader("关键指标速览")
     fundamental_data = get_btdr_fundamental_data()
     col4, col5 = st.columns(2)
+    
     with col4:
         st.write("📈 财务指标")
         finance_df = pd.DataFrame(fundamental_data["财务指标"])
         st.dataframe(finance_df, use_container_width=True)
+    
     with col5:
         st.write("⚙️ 运营指标")
         operate_df = pd.DataFrame(fundamental_data["运营指标"])
         st.dataframe(operate_df, use_container_width=True)
 
-    # 3. 股价走势预览
+    # 3. 股价走势预览（修复Plotly参数）
     st.subheader("近30日股价走势（含均线）")
     preview_data = stock_data.tail(30)
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=preview_data["Date"], y=preview_data["Close"], name="股价", line=dict(color="#1f77b4")))
-    fig.add_trace(go.Scatter(x=preview_data["Date"], y=preview_data["MA10"], name="10日均线", line=dict(color="#ff7f0e", dash="dash")))
-    fig.add_trace(go.Scatter(x=preview_data["Date"], y=preview_data["VWAP"], name="市场VWAP", line=dict(color="#2ca02c", dash="dot")))
-    fig.update_layout(height=300, xaxis_title="日期", yaxis_title="价格（美元）", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    fig.add_trace(go.Scatter(
+        x=preview_data["Date"], 
+        y=preview_data["Close"], 
+        name="股价", 
+        line=dict(color="#1f77b4")
+    ))
+    fig.add_trace(go.Scatter(
+        x=preview_data["Date"], 
+        y=preview_data["MA10"], 
+        name="10日均线", 
+        line=dict(color="#ff7f0e", dash="dash")
+    ))
+    fig.add_trace(go.Scatter(
+        x=preview_data["Date"], 
+        y=preview_data["VWAP"], 
+        name="市场VWAP", 
+        line=dict(color="#2ca02c", dash="dot")
+    ))
+    fig.update_layout(
+        height=300,
+        xaxis_title="日期",
+        yaxis_title="价格（美元）",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+    )
     st.plotly_chart(fig, use_container_width=True)
 
 # ---------------------- 股价&VWAP分析 ----------------------
@@ -212,22 +232,49 @@ elif menu_option == "股价&VWAP分析":
     st.title("股价走势与VWAP深度分析")
     st.divider()
 
-    # 1. 周期选择器
+    # 1. 周期选择
     period_option = st.selectbox("选择时间周期", ["1周", "1个月", "3个月", "6个月", "1年"])
     period_map = {"1周": "1wk", "1个月": "1mo", "3个月": "3mo", "6个月": "6mo", "1年": "1y"}
     stock_data, _ = get_btdr_stock_data(period=period_map[period_option])
 
-    # 2. 多维度图表
+    # 2. 多维度图表（修复Plotly参数）
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=stock_data["Date"], y=stock_data["Close"], name="股价", line=dict(color="#1f77b4", width=2)))
-    fig.add_trace(go.Scatter(x=stock_data["Date"], y=stock_data["MA10"], name="10日均线", line=dict(color="#ff7f0e", dash="dash")))
-    fig.add_trace(go.Scatter(x=stock_data["Date"], y=stock_data["MA20"], name="20日均线", line=dict(color="#d62728", dash="dash")))
+    # 股价&均线
+    fig.add_trace(go.Scatter(
+        x=stock_data["Date"], 
+        y=stock_data["Close"], 
+        name="股价", 
+        line=dict(color="#1f77b4", width=2)
+    ))
+    fig.add_trace(go.Scatter(
+        x=stock_data["Date"], 
+        y=stock_data["MA10"], 
+        name="10日均线", 
+        line=dict(color="#ff7f0e", dash="dash")
+    ))
+    fig.add_trace(go.Scatter(
+        x=stock_data["Date"], 
+        y=stock_data["MA20"], 
+        name="20日均线", 
+        line=dict(color="#d62728", dash="dash")
+    ))
     # 机构VWAP
     institution_vwap_data = calculate_institution_vwap(stock_data, period=len(stock_data))
-    fig.add_trace(go.Scatter(x=institution_vwap_data["Date"], y=institution_vwap_data["Institution_VWAP"], name="机构VWAP", line=dict(color="#9467bd", width=2)))
-    # 成交量
-    fig.add_trace(go.Bar(x=stock_data["Date"], y=stock_data["Volume"]/1e6, name="成交量（百万股）", yaxis="y2", opacity=0.5))
-
+    fig.add_trace(go.Scatter(
+        x=institution_vwap_data["Date"], 
+        y=institution_vwap_data["Institution_VWAP"], 
+        name="机构VWAP", 
+        line=dict(color="#9467bd", width=2)
+    ))
+    # 成交量（修复yaxis参数）
+    fig.add_trace(go.Bar(
+        x=stock_data["Date"], 
+        y=stock_data["Volume"]/1e6, 
+        name="成交量（百万股）", 
+        secondary_y=True,  # 替换yaxis="y2"为secondary_y=True
+        opacity=0.5
+    ))
+    # 布局优化
     fig.update_layout(
         height=500,
         xaxis_title="日期",
@@ -241,15 +288,18 @@ elif menu_option == "股价&VWAP分析":
     st.subheader("关键结论")
     latest_price = stock_data.iloc[-1]["Close"]
     latest_vwap = institution_vwap_data.iloc[-1]["Institution_VWAP"]
-    if latest_price > latest_vwap and latest_price > stock_data.iloc[-1]["MA10"]:
+    ma10 = stock_data.iloc[-1]["MA10"]
+    
+    if latest_price > latest_vwap and latest_price > ma10:
         st.success("✅ 当前股价高于机构VWAP和10日均线，短期强势，关注上方阻力位")
-    elif latest_price < latest_vwap and latest_price < stock_data.iloc[-1]["MA10"]:
+    elif latest_price < latest_vwap and latest_price < ma10:
         st.warning("⚠️ 当前股价低于机构VWAP和10日均线，短期弱势，关注下方支撑位")
     else:
         st.info("ℹ️ 股价处于震荡区间，需结合筹码峰与成交量进一步判断")
 
     # 4. 数据导出
-    csv_data = stock_data[["Date", "Open", "High", "Low", "Close", "Volume", "VWAP", "MA10", "MA20"]].to_csv(index=False)
+    csv_cols = ["Date", "Open", "High", "Low", "Close", "Volume", "VWAP", "MA10", "MA20"]
+    csv_data = stock_data[csv_cols].to_csv(index=False)
     st.download_button(
         label="导出股价数据（CSV）",
         data=csv_data,
@@ -257,7 +307,7 @@ elif menu_option == "股价&VWAP分析":
         mime="text/csv"
     )
 
-# ---------------------- 筹码峰联动 ----------------------
+# ---------------------- 筹码峰联动（修复Plotly横向柱状图参数） ----------------------
 elif menu_option == "筹码峰联动":
     st.title("筹码峰与机构VWAP联动分析")
     st.divider()
@@ -267,25 +317,57 @@ elif menu_option == "筹码峰联动":
     stock_data, _ = get_btdr_stock_data(period=f"{period}d")
     筹码峰_data = simulate_筹码峰(stock_data, period=period)
     institution_vwap_data = calculate_institution_vwap(stock_data, period=period)
+    
     latest_price = stock_data.iloc[-1]["Close"]
     latest_vwap = institution_vwap_data.iloc[-1]["Institution_VWAP"]
 
-    # 2. 双图联动
+    # 2. 双图联动（修复Plotly参数）
     col1, col2 = st.columns([1, 2])
+    
     with col1:
-        # 筹码峰图表
         st.subheader("筹码分布")
-        fig1 = go.Figure(go.Bar(x=筹码峰_data["筹码占比"], y=筹码峰_data["价格"], orientation="h", color="#ff7f0e"))
-        fig1.add_vline(x=latest_price, line_dash="dash", line_color="red", annotation_text="当前股价")
-        fig1.add_vline(x=latest_vwap, line_dash="dash", line_color="blue", annotation_text="机构VWAP")
-        fig1.update_layout(height=400, xaxis_title="筹码占比（%）", yaxis_title="价格（美元）")
+        # 修复横向柱状图参数（orientation="h" 改为 y/x 映射）
+        fig1 = go.Figure()
+        fig1.add_trace(go.Bar(
+            y=筹码峰_data["价格"],  # Y轴：价格
+            x=筹码峰_data["筹码占比"],  # X轴：筹码占比
+            marker_color="#ff7f0e",
+            name="筹码占比"
+        ))
+        # 添加参考线（修复annotation参数）
+        fig1.add_hline(y=latest_price, line_dash="dash", line_color="red")
+        fig1.add_annotation(
+            x=筹码峰_data["筹码占比"].max() * 0.8,
+            y=latest_price,
+            text=f"当前股价: ${latest_price:.2f}",
+            showarrow=True,
+            arrowhead=1
+        )
+        fig1.add_hline(y=latest_vwap, line_dash="dash", line_color="blue")
+        fig1.add_annotation(
+            x=筹码峰_data["筹码占比"].max() * 0.8,
+            y=latest_vwap,
+            text=f"机构VWAP: ${latest_vwap:.2f}",
+            showarrow=True,
+            arrowhead=1
+        )
+        fig1.update_layout(
+            height=400,
+            xaxis_title="筹码占比（%）",
+            yaxis_title="价格（美元）",
+            yaxis=dict(autorange="reversed")  # 价格从上到下递减，符合常规筹码峰展示
+        )
         st.plotly_chart(fig1, use_container_width=True)
 
         # 筹码集中度分析
-        主峰价格 = 筹码峰_data.loc[筹码峰_data["筹码占比"].idxmax(), "价格"]
-        主峰占比 = 筹码峰_data["筹码占比"].max()
+        主峰_idx = 筹码峰_data["筹码占比"].idxmax()
+        主峰价格 = 筹码峰_data.loc[主峰_idx, "价格"]
+        主峰占比 = 筹码峰_data.loc[主峰_idx, "筹码占比"]
+        
         st.write(f"📌 筹码主峰：${主峰价格:.2f}（占比{主峰占比:.1f}%）")
-        if abs(主峰价格 - latest_vwap) / latest_vwap < 0.02:
+        vwap_diff = abs(主峰价格 - latest_vwap) / latest_vwap
+        
+        if vwap_diff < 0.02:
             st.success("✅ 机构VWAP与筹码主峰重合，支撑位极强")
         elif latest_vwap < 主峰价格:
             st.info("ℹ️ 机构成本低于筹码主峰，主力低吸布局")
@@ -293,13 +375,37 @@ elif menu_option == "筹码峰联动":
             st.warning("⚠️ 机构成本高于筹码主峰，需警惕获利了结")
 
     with col2:
-        # 股价+VWAP+筹码主峰联动图
         st.subheader(f"{period}日股价+VWAP+筹码主峰")
         fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(x=stock_data["Date"], y=stock_data["Close"], name="股价", line=dict(color="#1f77b4")))
-        fig2.add_trace(go.Scatter(x=institution_vwap_data["Date"], y=institution_vwap_data["Institution_VWAP"], name="机构VWAP", line=dict(color="#9467bd")))
-        fig2.add_hline(y=主峰价格, line_dash="dash", line_color="orange", annotation_text=f"筹码主峰（${主峰价格:.2f}）")
-        fig2.update_layout(height=400, xaxis_title="日期", yaxis_title="价格（美元）", legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+        fig2.add_trace(go.Scatter(
+            x=stock_data["Date"], 
+            y=stock_data["Close"], 
+            name="股价", 
+            line=dict(color="#1f77b4")
+        ))
+        fig2.add_trace(go.Scatter(
+            x=institution_vwap_data["Date"], 
+            y=institution_vwap_data["Institution_VWAP"], 
+            name="机构VWAP", 
+            line=dict(color="#9467bd")
+        ))
+        fig2.add_hline(
+            y=主峰价格, 
+            line_dash="dash", 
+            line_color="orange"
+        )
+        fig2.add_annotation(
+            x=stock_data["Date"].iloc[-10],
+            y=主峰价格,
+            text=f"筹码主峰: ${主峰价格:.2f}",
+            showarrow=True
+        )
+        fig2.update_layout(
+            height=400,
+            xaxis_title="日期",
+            yaxis_title="价格（美元）",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
         st.plotly_chart(fig2, use_container_width=True)
 
 # ---------------------- 投资工具 ----------------------
@@ -320,10 +426,13 @@ elif menu_option == "投资工具":
         submit_btn = st.form_submit_button("计算")
 
         if submit_btn:
-            institution_vwap_data = calculate_institution_vwap(get_btdr_stock_data()[0])
+            stock_data, _ = get_btdr_stock_data()
+            institution_vwap_data = calculate_institution_vwap(stock_data)
             latest_vwap = institution_vwap_data.iloc[-1]["Institution_VWAP"]
-            当前股价 = get_btdr_stock_data()[0].iloc[-1]["Close"]
-            浮盈 = (当前股价 - 持仓价格) * 持仓数量 - (持仓价格 * 持仓数量 * 手续费率 / 100)
+            当前股价 = stock_data.iloc[-1]["Close"]
+            
+            交易成本 = 持仓价格 * 持仓数量 * (手续费率 / 100)
+            浮盈 = (当前股价 - 持仓价格) * 持仓数量 - 交易成本
             与机构价差 = (持仓价格 - latest_vwap) / latest_vwap * 100
 
             st.write("### 测算结果")
@@ -335,7 +444,7 @@ elif menu_option == "投资工具":
             with col6:
                 st.metric("当前股价", f"${当前股价:.2f}")
 
-            # 建议
+            # 投资建议
             if 与机构价差 < -5:
                 st.success("✅ 你的持仓成本低于机构5%+，安全垫充足，可长期持有")
             elif 与机构价差 > 5:
@@ -353,7 +462,9 @@ elif menu_option == "投资工具":
         production = st.selectbox("SEAL04量产进度", ["延期1个月", "如期量产", "提前量产"])
 
     if st.button("生成模拟结果"):
-        base_price = get_btdr_stock_data()[0].iloc[-1]["Close"]
+        stock_data, _ = get_btdr_stock_data()
+        base_price = stock_data.iloc[-1]["Close"]
+        
         # 模拟逻辑
         btc_impact = float(btc_change.strip("%")) * 0.5
         production_impact = 3 if production == "提前量产" else (-3 if production == "延期1个月" else 0)
@@ -370,7 +481,7 @@ elif menu_option == "投资工具":
         st.write(f"- {production}，影响股价{production_impact:.1f}%")
         st.write(f"- 总影响：{total_impact:.1f}%")
 
-# ---------------------- 财务&运营数据 ----------------------
+# ---------------------- 财务&运营数据（修复Plotly图表参数） ----------------------
 elif menu_option == "财务&运营数据":
     st.title("财务与运营数据详情")
     st.divider()
@@ -386,19 +497,36 @@ elif menu_option == "财务&运营数据":
     with tab2:
         operate_df = pd.DataFrame(fundamental_data["运营指标"])
         st.dataframe(operate_df, use_container_width=True)
-        # 运营趋势图
+        
+        # 运营趋势图（修复Plotly参数）
         st.subheader("算力与BTC产出趋势（模拟）")
         trend_data = pd.DataFrame({
             "月份": ["9月", "10月", "11月", "12月E", "2026-01E"],
             "算力（EH/s）": [32.1, 38.5, 45.7, 52.0, 60.0],
             "BTC产出（枚）": [312, 389, 526, 610, 720]
         })
+        
         fig = go.Figure()
-        fig.add_trace(go.Bar(x=trend_data["月份"], y=trend_data["算力（EH/s）"], name="算力", yaxis="y1", color="#1f77b4"))
-        fig.add_trace(go.Line(x=trend_data["月份"], y=trend_data["BTC产出（枚）"], name="BTC产出", yaxis="y2", color="#ff7f0e"))
+        # 算力（柱状图）
+        fig.add_trace(go.Bar(
+            x=trend_data["月份"],
+            y=trend_data["算力（EH/s）"],
+            name="算力",
+            marker_color="#1f77b4"
+        ))
+        # BTC产出（折线图，修复secondary_y参数）
+        fig.add_trace(go.Scatter(
+            x=trend_data["月份"],
+            y=trend_data["BTC产出（枚）"],
+            name="BTC产出",
+            line=dict(color="#ff7f0e", width=2),
+            secondary_y=True
+        ))
+        # 布局
         fig.update_layout(
             height=300,
-            yaxis=dict(title="算力（EH/s）"),
+            xaxis_title="月份",
+            yaxis_title="算力（EH/s）",
             yaxis2=dict(title="BTC产出（枚）", overlaying="y", side="right"),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
@@ -441,4 +569,4 @@ elif menu_option == "风险提示":
 # ---------------------- 页脚 ----------------------
 st.divider()
 st.write("📅 数据更新时间：", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-st.write("🔧 技术支持：Streamlit | 数据说明：核心数据为模拟/公开披露，避免API限流")
+st.write("🔧 技术支持：Streamlit | 数据说明：核心数据为模拟/公开披露，兼容Yahoo API限流")
