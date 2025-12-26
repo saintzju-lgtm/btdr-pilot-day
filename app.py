@@ -2,20 +2,18 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import time
 import requests
-from datetime import datetime, timedelta, time as dt_time
+from datetime import datetime, timedelta
 import pytz
-from streamlit_autorefresh import st_autorefresh
 
 # --- 1. 页面配置 ---
-st.set_page_config(page_title="BTDR Pilot v7.6 (AI-Tuned)", layout="centered")
-st_autorefresh(interval=5000, limit=None, key="realtime_counter")
+st.set_page_config(page_title="BTDR Pilot v7.7 (Stable)", layout="centered")
 
-# CSS 样式 (保持原样，略去以节省篇幅，请保留 v7.5 的 CSS)
+# 注意：移除了 st_autorefresh，改用原生的 @st.fragment 实现无感刷新
+
+# CSS: 保持样式不变
 st.markdown("""
     <style>
-    /* ... (请在此处粘贴 v7.5 的 CSS 代码) ... */
     /* 基础重置 */
     html { overflow-y: scroll; }
     .stApp > header { display: none; }
@@ -69,73 +67,32 @@ def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
     </div>
     """
 
-# --- 3. 状态管理 ---
-if 'data_cache' not in st.session_state: st.session_state['data_cache'] = None
+# --- 3. 数据与模型逻辑 (缓存层) ---
 
-st.markdown("### ⚡ BTDR Pilot v7.6 (Smart-Train)")
-
-# --- 4. UI 骨架 ---
-ph_time = st.empty()
-c1, c2 = st.columns(2)
-with c1: ph_btc = st.empty()
-with c2: ph_fng = st.empty()
-
-st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-st.caption("⚒️ 矿股板块 Beta")
-cols = st.columns(5)
-ph_peers = [col.empty() for col in cols]
-
-st.markdown("---")
-c3, c4 = st.columns(2)
-with c3: ph_btdr_price = st.empty()
-with c4: ph_btdr_open = st.empty()
-
-st.markdown("### 🎯 AI 托管预测 (每日校准)")
-col_h, col_l = st.columns(2)
-with col_h: ph_pred_high = st.empty()
-with col_l: ph_pred_low = st.empty()
-st.markdown("---")
-ph_footer = st.empty()
-
-# --- 5. 核心逻辑：智能训练系统 (Smart Auto-Tune) ---
-# 关键修改：这里的缓存 key 包含了日期，强制每天重新训练一次
 @st.cache_resource(ttl=None) 
 def get_ai_model_version(date_key):
-    """
-    date_key: 传入当天的日期字符串。
-    当日期变更时，Streamlit 会视为新的调用，从而触发重新训练。
-    """
-    
-    # 默认参数
+    """AI 每天自动训练一次"""
     default_model = {
         "high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52},
         "low":  {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42},
         "beta_sector": 0.25
     }
-    
     log_msg = f"Last Training: {datetime.now().strftime('%H:%M:%S')}"
     
     try:
-        # 1. 获取包含昨天收盘的完整数据
-        # 增加 period 到 65d 以确保有足够的数据进行加权
         df = yf.download("BTDR", period="65d", interval="1d", progress=False)
-        
         if len(df) < 20: return default_model, log_msg + " (Low Data)"
         if isinstance(df.columns, pd.MultiIndex): df = df.xs('BTDR', axis=1, level=1)
-        
         df = df.dropna()
         df['PrevClose'] = df['Close'].shift(1)
         df = df.dropna()
         
-        # 2. 特征工程
         x = ((df['Open'] - df['PrevClose']) / df['PrevClose'] * 100).values
         y_high = ((df['High'] - df['PrevClose']) / df['PrevClose'] * 100).values
         y_low = ((df['Low'] - df['PrevClose']) / df['PrevClose'] * 100).values
         
-        # 3. 时间加权算法 (Time-Decay Weights)
-        # 给最近的 10 天赋予极高权重，模拟“近期市场风格”
         length = len(x)
-        weights = np.exp(np.linspace(-1, 0, length)) # 指数衰减权重，越近越大
+        weights = np.exp(np.linspace(-1, 0, length)) 
         
         def weighted_stats(x_in, y_in, w_in):
             w_mean_x = np.average(x_in, weights=w_in)
@@ -149,8 +106,6 @@ def get_ai_model_version(date_key):
         beta_h, int_h = weighted_stats(x, y_high, weights)
         beta_l, int_l = weighted_stats(x, y_low, weights)
         
-        # 4. 动态调整 (Risk Bounding)
-        # 如果最近波动极大，自动收窄 Beta
         volatility = np.std(y_high[-5:]) 
         dampener = 0.9 if volatility > 5 else 1.0
         
@@ -163,79 +118,11 @@ def get_ai_model_version(date_key):
             "beta_sector": 0.25
         }
         return final_model, log_msg + " (Success)"
-        
     except Exception as e:
         return default_model, log_msg + f" (Err: {str(e)[:5]})"
 
-# --- 6. 渲染与逻辑 ---
-def render_ui(data):
-    if not data: return
-    quotes = data['quotes']
-    fng_val = data['fng']
-    model_params = data['model']
-    model_status = data['model_status']
-    
-    btc_chg = quotes['BTC-USD']['pct']
-    btc_price = quotes['BTC-USD']['price']
-    btdr = quotes['BTDR']
-    
-    # 时间显示
-    tz_bj = pytz.timezone('Asia/Shanghai')
-    tz_ny = pytz.timezone('America/New_York')
-    now_bj = datetime.now(tz_bj).strftime('%H:%M:%S')
-    now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
-    
-    ph_time.markdown(f"<div class='time-bar'>北京 {now_bj} | 美东 {now_ny} | 🧠 {model_status}</div>", unsafe_allow_html=True)
-    
-    # 指标卡片
-    ph_btc.markdown(card_html("BTC (全时段)", f"${btc_price:,.0f}", f"{btc_chg:+.2f}%", btc_chg), unsafe_allow_html=True)
-    ph_fng.markdown(card_html("恐慌指数", f"{fng_val}", None, 0), unsafe_allow_html=True)
-    
-    # 板块
-    peers = ["MARA", "RIOT", "CORZ", "CLSK", "IREN"]
-    valid_peers_pct = []
-    for i, p in enumerate(peers):
-        if p in quotes:
-            val = quotes[p]['pct']
-            ph_peers[i].markdown(card_html(p, f"{val:+.1f}%", f"{val:+.1f}%", val), unsafe_allow_html=True)
-            if quotes[p]['price'] > 0: valid_peers_pct.append(val)
-
-    # 预测运算
-    sector_avg = sum(valid_peers_pct)/len(valid_peers_pct) if valid_peers_pct else 0
-    sector_alpha = sector_avg - btc_chg
-    sentiment_adj = (fng_val - 50) * 0.03 # 增加恐慌指数的权重
-    
-    if btdr['price'] > 0:
-        btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) * 100
-        M = model_params
-        
-        # 核心预测公式
-        pred_h_pct = M['high']['intercept'] + (M['high']['beta_open']*btdr_open_pct) + (M['high']['beta_btc']*btc_chg) + (M['beta_sector']*sector_alpha) + sentiment_adj
-        pred_l_pct = M['low']['intercept'] + (M['low']['beta_open']*btdr_open_pct) + (M['low']['beta_btc']*btc_chg) + (M['beta_sector']*sector_alpha) + sentiment_adj
-        
-        p_h = btdr['prev'] * (1 + pred_h_pct/100)
-        p_l = btdr['prev'] * (1 + pred_l_pct/100)
-        
-        # 渲染预测框
-        h_bg = "#e6fcf5" if btdr['price'] < p_h else "#0ca678"; h_tx = "#087f5b" if btdr['price'] < p_h else "#fff"
-        l_bg = "#fff5f5" if btdr['price'] > p_l else "#e03131"; l_tx = "#c92a2a" if btdr['price'] > p_l else "#fff"
-        
-        ph_pred_high.markdown(f"""<div class='pred-container-wrapper'><div class='pred-box' style='background:{h_bg};color:{h_tx};border:1px solid #c3fae8'>
-            <div style='font-size:0.8rem;opacity:0.8'>阻力位 (High)</div><div style='font-size:1.5rem;font-weight:bold'>${p_h:.2f}</div>
-            <div style='font-size:0.75rem;opacity:0.9'>预期: {pred_h_pct:+.2f}%</div></div></div>""", unsafe_allow_html=True)
-            
-        ph_pred_low.markdown(f"""<div class='pred-container-wrapper'><div class='pred-box' style='background:{l_bg};color:{l_tx};border:1px solid #ffc9c9'>
-            <div style='font-size:0.8rem;opacity:0.8'>支撑位 (Low)</div><div style='font-size:1.5rem;font-weight:bold'>${p_l:.2f}</div>
-            <div style='font-size:0.75rem;opacity:0.9'>预期: {pred_l_pct:+.2f}%</div></div></div>""", unsafe_allow_html=True)
-            
-        ph_btdr_price.markdown(card_html("BTDR 实时", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct']), unsafe_allow_html=True)
-        ph_btdr_open.markdown(card_html("计算用开盘", f"${btdr['open']:.2f}", f"{btdr_open_pct:+.2f}%", btdr_open_pct), unsafe_allow_html=True)
-
-# --- 7. 数据获取 ---
-@st.cache_data(ttl=10) # 缩短数据缓存时间，保证实时性
-def get_data_v76():
-    # ... (保持 v7.5 的 get_data_v74 逻辑，代码完全复用) ...
-    # 为了完整性，我这里简写，请确保复制 v7.5 的 get_data_v74 函数内容到这里
+@st.cache_data(ttl=5) # 短缓存，防止频繁请求卡顿
+def get_data_v77():
     tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN"
     try:
         daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=True, progress=False)
@@ -249,8 +136,10 @@ def get_data_v76():
                 if not df_day.empty: df_day = df_day.dropna(subset=['Close'])
                 df_min = live[sym] if sym in live else pd.DataFrame()
                 if not df_min.empty: df_min = df_min.dropna(subset=['Close'])
+                
                 state = "REG" if not df_min.empty else "CLOSED"
                 current_price = df_min['Close'].iloc[-1] if not df_min.empty else (df_day['Close'].iloc[-1] if not df_day.empty else 0)
+                
                 prev_close = 1.0
                 if not df_day.empty:
                     last_date = df_day.index[-1].date()
@@ -258,6 +147,7 @@ def get_data_v76():
                         if len(df_day) >= 2: prev_close = df_day['Close'].iloc[-2]
                         elif not df_day.empty: prev_close = df_day['Open'].iloc[-1]
                     else: prev_close = df_day['Close'].iloc[-1]
+                
                 pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
                 open_price = df_day['Open'].iloc[-1] if not df_day.empty and df_day.index[-1].date() == today_ny else current_price
                 quotes[sym] = {"price": current_price, "pct": pct, "prev": prev_close, "open": open_price, "tag": state}
@@ -265,28 +155,114 @@ def get_data_v76():
         return quotes
     except: return None
 
-# --- 8. 执行流 ---
-# 计算当天的“训练Key”：如果是美东时间 4点以后，就是今天；否则是昨天。
-# 这样确保每天收盘后，模型ID变化，触发重新训练。
-ny_now = datetime.now(pytz.timezone('America/New_York'))
-training_key = ny_now.date() if ny_now.hour >= 4 else ny_now.date() - timedelta(days=1)
+@st.cache_data(ttl=3600)
+def get_fng():
+    try: return int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
+    except: return 50
 
-# 获取/训练模型
-ai_model, ai_status = get_ai_model_version(str(training_key))
-
-# 获取实时数据
-new_quotes = get_data_v76()
-
-if new_quotes:
-    try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
-    except: fng = 50
+# --- 4. 核心：无感刷新仪表盘 ---
+# 使用 @st.fragment 装饰器，实现局部刷新，杜绝全页跳动
+@st.fragment(run_every=5)
+def dashboard_fragment():
     
-    st.session_state['data_cache'] = {
-        'quotes': new_quotes, 
-        'fng': fng, 
-        'model': ai_model, 
-        'model_status': ai_status
-    }
-    render_ui(st.session_state['data_cache'])
-else:
-    ph_time.info("📡 初始化数据流...")
+    # 1. 准备数据
+    ny_now = datetime.now(pytz.timezone('America/New_York'))
+    # 如果是美东下午4点后，视为新的一天，触发重新训练
+    training_key = ny_now.date() if ny_now.hour >= 4 else ny_now.date() - timedelta(days=1)
+    
+    ai_model, ai_status = get_ai_model_version(str(training_key))
+    quotes = get_data_v77()
+    fng_val = get_fng()
+
+    if not quotes:
+        st.warning("📡 正在获取实时数据...")
+        return
+
+    # 2. 解包数据
+    btc_chg = quotes['BTC-USD']['pct']
+    btc_price = quotes['BTC-USD']['price']
+    btdr = quotes['BTDR']
+    
+    # 时间栏
+    tz_bj = pytz.timezone('Asia/Shanghai')
+    now_bj = datetime.now(tz_bj).strftime('%H:%M:%S')
+    now_ny = ny_now.strftime('%H:%M:%S')
+    st.markdown(f"<div class='time-bar'>北京 {now_bj} | 美东 {now_ny} | 🧠 {ai_status}</div>", unsafe_allow_html=True)
+
+    # 3. 核心指标区 (不再需要 st.empty，直接布局)
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown(card_html("BTC (全时段)", f"${btc_price:,.0f}", f"{btc_chg:+.2f}%", btc_chg), unsafe_allow_html=True)
+    with c2:
+        st.markdown(card_html("恐慌指数", f"{fng_val}", None, 0), unsafe_allow_html=True)
+
+    # 4. 板块区
+    st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+    st.caption("⚒️ 矿股板块 Beta")
+    cols = st.columns(5)
+    peers = ["MARA", "RIOT", "CORZ", "CLSK", "IREN"]
+    valid_peers_pct = []
+    
+    for i, p in enumerate(peers):
+        if p in quotes:
+            val = quotes[p]['pct']
+            cols[i].markdown(card_html(p, f"{val:+.1f}%", f"{val:+.1f}%", val), unsafe_allow_html=True)
+            if quotes[p]['price'] > 0: valid_peers_pct.append(val)
+
+    # 分割线
+    st.markdown("---")
+
+    # 5. BTDR 实时区
+    c3, c4 = st.columns(2)
+    btdr_open_pct = 0
+    if btdr['price'] > 0:
+        btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) * 100
+        
+    state_map = {"PRE": "dot-pre", "REG": "dot-reg", "POST": "dot-post", "CLOSED": "dot-closed"}
+    dot_class = state_map.get(btdr.get('tag', 'CLOSED'), 'dot-closed')
+    status_tag = f"<span class='status-dot {dot_class}'></span> <span style='margin-left:2px; font-size:0.7rem;'>{btdr.get('tag', 'CLOSED')}</span>"
+
+    with c3:
+        st.markdown(card_html("BTDR 实时", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
+    with c4:
+        st.markdown(card_html("计算用开盘", f"${btdr['open']:.2f}", f"{btdr_open_pct:+.2f}%", btdr_open_pct), unsafe_allow_html=True)
+
+    # 6. 预测区
+    st.markdown("### 🎯 AI 托管预测 (每日校准)")
+    
+    # 计算预测逻辑
+    sector_avg = sum(valid_peers_pct)/len(valid_peers_pct) if valid_peers_pct else 0
+    sector_alpha = sector_avg - btc_chg
+    sentiment_adj = (fng_val - 50) * 0.03
+    
+    M = ai_model
+    pred_h_pct = M['high']['intercept'] + (M['high']['beta_open']*btdr_open_pct) + (M['high']['beta_btc']*btc_chg) + (M['beta_sector']*sector_alpha) + sentiment_adj
+    pred_l_pct = M['low']['intercept'] + (M['low']['beta_open']*btdr_open_pct) + (M['low']['beta_btc']*btc_chg) + (M['beta_sector']*sector_alpha) + sentiment_adj
+    
+    p_h = btdr['prev'] * (1 + pred_h_pct/100)
+    p_l = btdr['prev'] * (1 + pred_l_pct/100)
+    
+    col_h, col_l = st.columns(2)
+    
+    h_bg = "#e6fcf5" if btdr['price'] < p_h else "#0ca678"; h_tx = "#087f5b" if btdr['price'] < p_h else "#fff"
+    l_bg = "#fff5f5" if btdr['price'] > p_l else "#e03131"; l_tx = "#c92a2a" if btdr['price'] > p_l else "#fff"
+
+    with col_h:
+        st.markdown(f"""<div class='pred-container-wrapper'><div class='pred-box' style='background:{h_bg};color:{h_tx};border:1px solid #c3fae8'>
+            <div style='font-size:0.8rem;opacity:0.8'>阻力位 (High)</div><div style='font-size:1.5rem;font-weight:bold'>${p_h:.2f}</div>
+            <div style='font-size:0.75rem;opacity:0.9'>预期: {pred_h_pct:+.2f}%</div></div></div>""", unsafe_allow_html=True)
+    
+    with col_l:
+        st.markdown(f"""<div class='pred-container-wrapper'><div class='pred-box' style='background:{l_bg};color:{l_tx};border:1px solid #ffc9c9'>
+            <div style='font-size:0.8rem;opacity:0.8'>支撑位 (Low)</div><div style='font-size:1.5rem;font-weight:bold'>${p_l:.2f}</div>
+            <div style='font-size:0.75rem;opacity:0.9'>预期: {pred_l_pct:+.2f}%</div></div></div>""", unsafe_allow_html=True)
+
+    st.caption(f"Update: {now_ny} ET | Auto-Tuned by AI (Smart-Train)")
+
+# --- 5. 主程序入口 ---
+st.markdown("### ⚡ BTDR Pilot v7.7 (Stable)")
+
+# 调用局部刷新函数
+# 这部分代码每 5 秒自动只运行 dashboard_fragment 内部的内容
+# 页面其他部分完全静止，不会跳动
+dashboard_fragment()
