@@ -1,529 +1,321 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-import yfinance as yf
-from datetime import datetime, timedelta
 import time
-import random
-import pytz  # 导入时区处理库
+import requests
+from datetime import datetime, timedelta
+import pytz
+from streamlit_autorefresh import st_autorefresh
 
-# 定义时区
-beijing_tz = pytz.timezone('Asia/Shanghai')
-eastern_tz = pytz.timezone('US/Eastern') # 使用 US/Eastern 代替 America/New_York
+# --- 1. 页面配置 ---
+st.set_page_config(page_title="BTDR Pilot v7.4", layout="centered")
 
-def get_formatted_times():
-    """获取当前北京时间与美东时间"""
-    now_utc = datetime.now(pytz.UTC)
-    beijing_time = now_utc.astimezone(beijing_tz)
-    eastern_time = now_utc.astimezone(eastern_tz)
+# 5秒刷新
+st_autorefresh(interval=5000, limit=None, key="realtime_counter")
+
+# CSS: 定义统一的卡片样式 (Unified Card Style)
+st.markdown("""
+    <style>
+    /* 基础重置 */
+    html { overflow-y: scroll; }
+    .stApp > header { display: none; }
+    .stApp { margin-top: -30px; background-color: #ffffff; }
+    div[data-testid="stStatusWidget"] { visibility: hidden; }
     
-    return {
-        'beijing': beijing_time.strftime('%H:%M:%S'),
-        'eastern': eastern_time.strftime('%H:%M:%S'),
-        'beijing_date': beijing_time.strftime('%Y-%m-%d'),
-        'eastern_date': eastern_time.strftime('%Y-%m-%d')
+    h1, h2, h3, div, p, span { 
+        color: #212529 !important; 
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important; 
     }
-
-# ---------------------- 全局配置 ----------------------
-st.set_page_config(
-    page_title="BTDR 实时分析平台",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
-
-# 固定随机种子（模拟数据兜底用）
-np.random.seed(42)
-
-# ---------------------- 真实数据请求（缓存TTL=30秒，手动刷新） ----------------------
-@st.cache_data(ttl=30)  # 缓存30秒，减少API请求压力
-def get_real_stock_data(symbol="BTDR", period="1mo", interval="1d", progress_hook=None):
-    """获取真实数据，失败则返回模拟数据。增加了进度钩子以支持spinner。"""
-    if progress_hook:
-        progress_hook("正在从Yahoo Finance获取数据...")
-    try:
-        # 动态延迟（0.5-1.5秒），规避限流
-        time.sleep(random.uniform(0.5, 1.5))
-        
-        # 极简请求：仅拉取历史数据，不调用info（避免额外限流）
-        ticker = yf.Ticker(symbol)
-        hist = ticker.history(period=period, interval=interval)
-        
-        if hist.empty:
-            raise Exception("真实数据为空")
-        
-        # 数据清洗
-        hist.reset_index(inplace=True)
-        hist["Date"] = pd.to_datetime(hist["Date"]).dt.date
-        hist = hist[["Date", "Open", "High", "Low", "Close", "Volume"]]
-        
-        # 计算衍生指标（本地）
-        hist["MA10"] = hist["Close"].rolling(window=10).mean()
-        hist["MA20"] = hist["Close"].rolling(window=20).mean()
-        hist["CumVol"] = hist["Volume"].cumsum()
-        hist["CumVolPrice"] = (hist["Close"] * hist["Volume"]).cumsum()
-        hist["VWAP"] = hist["CumVolPrice"] / (hist["CumVol"] + 1e-8)
-        
-        return hist, True # 返回True表示数据真实
     
-    except Exception as e:
-        st.warning(f"⚠️ 真实数据获取失败（{str(e)[:50]}...），使用模拟数据兜底")
-        # 模拟数据兜底
-        dates = pd.date_range(end=datetime.now(), periods=30, freq='D')
-        hist = pd.DataFrame({
-            "Date": dates.date,
-            "Open": np.random.uniform(10, 12, 30),
-            "High": np.random.uniform(10.5, 12.5, 30),
-            "Low": np.random.uniform(9.5, 11.5, 30),
-            "Close": np.random.uniform(10, 12, 30),
-            "Volume": np.random.randint(1000000, 5000000, 30)
-        })
-        hist["MA10"] = hist["Close"].rolling(window=10).mean()
-        hist["MA20"] = hist["Close"].rolling(window=20).mean()
-        hist["CumVol"] = hist["Volume"].cumsum()
-        hist["CumVolPrice"] = (hist["Close"] * hist["Volume"]).cumsum()
-        hist["VWAP"] = hist["CumVolPrice"] / (hist["CumVol"] + 1e-8)
-        return hist, False # 返回False表示数据模拟
-
-# ---------------------- 静态基础数据 ----------------------
-def get_fundamental_data():
-    """静态财务/运营数据（补充真实数据）"""
-    return {
-        "财务指标": [
-            {"指标": "Q3 营收", "数值": "1.697亿美元", "同比": "+173.6%"},
-            {"指标": "Q3 毛利润", "数值": "4080万美元", "同比": "转正"},
-            {"指标": "调整后EBITDA", "数值": "4300万美元", "同比": "转正"},
-            {"指标": "净亏损", "数值": "2.667亿美元", "备注": "含非现金衍生品损失"},
-            {"指标": "总市值", "数值": "26.24亿美元", "更新时间": "2025-12-23"}
-        ],
-        "运营指标": [
-            {"指标": "自营算力（11月）", "数值": "45.7 EH/s", "同比": "+189%"},
-            {"指标": "BTC产出（11月）", "数值": "526 BTC", "同比": "+251%"},
-            {"指标": "BTC持仓", "数值": "2179 BTC", "备注": "长期持有"},
-            {"指标": "GPU利用率", "数值": "94%", "业务": "AI/HPC"},
-            {"指标": "AI云ARR", "数值": "1000万美元", "目标": "2026年20亿美元"}
-        ],
-        "核心产品": [
-            {"产品": "SEALMINER A3", "状态": "量产中", "能效": "行业领先"},
-            {"产品": "SEAL04芯片", "状态": "2026 Q1量产", "能效": "6-7 J/TH"}
-        ]
+    /* 统一的指标卡片样式 (替代 st.metric) */
+    .metric-card {
+        background-color: #f8f9fa;
+        border: 1px solid #e9ecef;
+        border-radius: 12px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+        height: 95px; /* 统一高度 */
+        padding: 0 16px;
+        display: flex; 
+        flex-direction: column; 
+        justify-content: center;
+        overflow: hidden;
+        transition: transform 0.2s;
     }
-
-# ---------------------- 衍生指标计算 ----------------------
-def calculate_institution_vwap(stock_data):
-    """计算机构VWAP（本地）"""
-    try:
-        stock_data = stock_data.copy()
-        stock_data["Institution_Vol"] = stock_data["Volume"] * 0.3
-        stock_data["Institution_Price"] = stock_data["Close"] * (1 + np.random.uniform(-0.02, 0.02, len(stock_data)))
-        stock_data["Cum_Institution_Vol"] = stock_data["Institution_Vol"].cumsum()
-        stock_data["Cum_Institution_Value"] = (stock_data["Institution_Price"] * stock_data["Institution_Vol"]).cumsum()
-        stock_data["Institution_VWAP"] = stock_data["Cum_Institution_Value"] / (stock_data["Cum_Institution_Vol"] + 1e-8)
-        return stock_data[["Date", "Institution_VWAP"]]
-    except Exception as e:
-        st.error(f"计算机构VWAP时出错: {e}")
-        return pd.DataFrame(columns=["Date", "Institution_VWAP"])
-
-def simulate_筹码峰(stock_data):
-    """模拟筹码峰（本地）"""
-    try:
-        price_min = stock_data["Close"].min() * 0.9
-        price_max = stock_data["Close"].max() * 1.1
-        price_range = np.linspace(price_min, price_max, 50)
-        volume_distribution = []
-        
-        for price in price_range:
-            mask = (stock_data["Close"] >= price * 0.98) & (stock_data["Close"] <= price * 1.02)
-            volume = stock_data.loc[mask, "Volume"].sum() if mask.any() else 0
-            volume_distribution.append(volume)
-        
-        total_volume = sum(volume_distribution) + 1e-8
-        return pd.DataFrame({
-            "价格": price_range,
-            "筹码占比": [v / total_volume * 100 for v in volume_distribution]
-        })
-    except Exception as e:
-        st.error(f"模拟筹码峰时出错: {e}")
-        return pd.DataFrame(columns=["价格", "筹码占比"])
-
-# ---------------------- 侧边栏导航 + 手动刷新按钮 ----------------------
-st.sidebar.title("📊 BTDR 实时分析平台")
-times = get_formatted_times()
-st.sidebar.caption(f"最后刷新：{times['beijing']} (北京) | {times['eastern']} (美东)")
-
-# 手动刷新按钮（核心刷新方式）
-if st.sidebar.button("🔄 手动刷新数据", type="primary"):
-    # 清空缓存并重新请求
-    get_real_stock_data.clear()
-    st.rerun()
-
-st.sidebar.info("ℹ️ 数据缓存30秒，点击按钮手动刷新最新数据")
-
-menu_option = st.sidebar.radio(
-    "选择功能模块",
-    ["核心数据总览", "股价&VWAP分析", "筹码峰联动", "投资工具", "财务&运营数据", "风险提示"]
-)
-
-# ---------------------- 数据加载逻辑（统一入口） ----------------------
-def load_data_for_page(period="1mo", interval="1d"):
-    """为页面加载数据的统一函数，包含spinner提示"""
-    with st.spinner("正在加载数据..."):
-        stock_data, is_real_data = get_real_stock_data(period=period, interval=interval)
-        vwap_data = calculate_institution_vwap(stock_data)
-        chip_data = simulate_筹码峰(stock_data)
-        fundamental = get_fundamental_data()
-    return stock_data, vwap_data, chip_data, fundamental, is_real_data
-
-# ---------------------- 核心数据总览（实时+缓存刷新） ----------------------
-if menu_option == "核心数据总览":
-    st.title("BTDR 核心数据总览")
-    st.divider()
     
-    # 加载数据
-    stock_data, vwap_data, _, fundamental, is_real_data = load_data_for_page()
-    latest = stock_data.iloc[-1]
-    institution_vwap = vwap_data.iloc[-1]["Institution_VWAP"] if not vwap_data.empty else np.nan
-
-    # 数据来源提示
-    if is_real_data:
-        st.success("✅ 已加载真实市场数据")
-    else:
-        st.warning("⚠️ 使用模拟数据兜底")
-
-    # 核心指标卡片
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if not pd.isna(latest["Close"]) and not pd.isna(latest["Open"]):
-            delta = latest["Close"] - latest["Open"]
-            st.metric(
-                label="当前股价",
-                value=f"${latest['Close']:.2f}",
-                delta=f"{delta:.2f} ({delta/latest['Open']*100:.2f}%)",
-                delta_color="inverse"
-            )
-        else:
-            st.metric(label="当前股价", value="N/A")
-    with col2:
-        if not pd.isna(institution_vwap) and not pd.isna(latest["Close"]):
-            delta_vwap = latest["Close"] - institution_vwap
-            st.metric(
-                label="机构VWAP（30日）",
-                value=f"${institution_vwap:.2f}",
-                delta=f"{delta_vwap:.2f} ({delta_vwap/institution_vwap*100:.2f}%)"
-            )
-        else:
-            st.metric(label="机构VWAP（30日）", value="N/A")
-    with col3:
-        st.metric(
-            label="市值",
-            value="$26.24亿",
-            help="2025-12-23更新（真实数据）"
-        )
-    
-    # 关键指标速览
-    st.subheader("关键指标速览")
-    col4, col5 = st.columns(2)
-    with col4:
-        st.write("📈 财务指标（真实）")
-        st.dataframe(pd.DataFrame(fundamental["财务指标"]), use_container_width=True)
-    with col5:
-        st.write("⚙️ 运营指标（真实）")
-        st.dataframe(pd.DataFrame(fundamental["运营指标"]), use_container_width=True)
-    
-    # 实时股价走势
-    st.subheader(f"近30日{'股价走势' if is_real_data else '模拟股价走势'}（缓存30秒）")
-    fig = go.Figure()
-    if not stock_data.empty:
-        fig.add_trace(go.Scatter(
-            x=stock_data["Date"], 
-            y=stock_data["Close"], 
-            name="真实股价" if is_real_data else "模拟股价", 
-            line_color="#1f77b4",
-            mode="lines+markers"
-        ))
-        fig.add_trace(go.Scatter(
-            x=stock_data["Date"], 
-            y=stock_data["MA10"], 
-            name="10日均线", 
-            line_color="#ff7f0e", 
-            line_dash="dash"
-        ))
-    fig.update_layout(
-        height=300,
-        xaxis_title="日期",
-        yaxis_title="价格（美元）",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-# ---------------------- 股价&VWAP分析（实时） ----------------------
-elif menu_option == "股价&VWAP分析":
-    st.title("股价走势与VWAP深度分析")
-    st.divider()
-    
-    # 周期选择
-    period_map = {
-        "1周": "1wk",
-        "1个月": "1mo",
-        "3个月": "3mo"
+    /* 标签行 */
+    .metric-label {
+        font-size: 0.75rem; 
+        color: #888; 
+        display: flex; 
+        align-items: center;
+        margin-bottom: 2px;
     }
-    period_option = st.selectbox("选择时间周期", list(period_map.keys()), index=1)
-    selected_period = period_map[period_option]
     
-    # 加载数据
-    stock_data, vwap_data, _, _, is_real_data = load_data_for_page(period=selected_period)
+    /* 数值行 (大号字体) - 重点修复：所有数字都一样大 */
+    .metric-value {
+        font-size: 1.8rem; 
+        font-weight: 700; 
+        color: #212529; 
+        line-height: 1.2;
+        letter-spacing: -0.5px;
+    }
+    
+    /* 涨跌幅行 */
+    .metric-delta {
+        font-size: 0.9rem; 
+        font-weight: 600;
+        margin-top: 2px;
+    }
+    
+    /* 颜色定义 */
+    .color-up { color: #0ca678; }
+    .color-down { color: #d6336c; }
+    .color-neutral { color: #adb5bd; }
+    
+    /* 预测容器 */
+    .pred-container-wrapper { height: 110px; width: 100%; display: block; }
+    .pred-box {
+        padding: 0 10px; border-radius: 12px; text-align: center;
+        height: 100%; display: flex; flex-direction: column; justify-content: center;
+    }
+    
+    /* 状态小圆点 */
+    .status-dot { height: 6px; width: 6px; border-radius: 50%; display: inline-block; margin-left: 6px; margin-bottom: 2px;}
+    .dot-pre { background-color: #f59f00; box-shadow: 0 0 4px #f59f00; }
+    .dot-reg { background-color: #0ca678; box-shadow: 0 0 4px #0ca678; }
+    .dot-post { background-color: #1c7ed6; box-shadow: 0 0 4px #1c7ed6; }
+    .dot-closed { background-color: #adb5bd; }
+    
+    /* 顶部时间栏 */
+    .time-bar {
+        font-size: 0.75rem; color: #999; text-align: center;
+        margin-bottom: 20px; padding: 6px; background: #fafafa; border-radius: 6px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
-    # 数据来源提示
-    if is_real_data:
-        st.success(f"✅ 已加载{period_option}真实市场数据")
+# --- 2. 辅助函数：生成统一 HTML 卡片 ---
+def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag=""):
+    """
+    生成一段标准的 HTML 代码，确保所有卡片长得一样
+    """
+    if delta_str:
+        color_class = "color-up" if delta_val >= 0 else "color-down"
+        delta_html = f"<div class='metric-delta {color_class}'>{delta_str}</div>"
     else:
-        st.warning(f"⚠️ {period_option}使用模拟数据兜底")
-
-    # 实时股价+VWAP图表
-    st.subheader(f"{period_option}{'股价走势' if is_real_data else '模拟股价走势'}（缓存30秒）")
-    fig = go.Figure()
-    if not stock_data.empty and not vwap_data.empty:
-        fig.add_trace(go.Scatter(
-            x=stock_data["Date"], 
-            y=stock_data["Close"], 
-            name="真实股价" if is_real_data else "模拟股价", 
-            line_color="#1f77b4",
-            mode="lines+markers"
-        ))
-        fig.add_trace(go.Scatter(
-            x=stock_data["Date"], 
-            y=stock_data["MA10"], 
-            name="10日均线", 
-            line_color="#ff7f0e", 
-            line_dash="dash"
-        ))
-        fig.add_trace(go.Scatter(
-            x=vwap_data["Date"], 
-            y=vwap_data["Institution_VWAP"], 
-            name="机构VWAP", 
-            line_color="#9467bd"
-        ))
-    fig.update_layout(
-        height=400,
-        xaxis_title="日期",
-        yaxis_title="价格（美元）",
-        legend=dict(orientation="h")
-    )
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # 成交量（真实）
-    if not stock_data.empty:
-        st.subheader(f"{period_option}成交量（{'真实' if is_real_data else '模拟'}）")
-        fig_vol = go.Figure(go.Bar(
-            x=stock_data["Date"], 
-            y=stock_data["Volume"]/1e6, 
-            marker_color="#2ca02c"
-        ))
-        fig_vol.update_layout(height=200, xaxis_title="日期", yaxis_title="成交量（百万股）")
-        st.plotly_chart(fig_vol, use_container_width=True)
-    
-    # 实时分析结论
-    if not stock_data.empty and not vwap_data.empty:
-        latest_price = stock_data.iloc[-1]["Close"]
-        latest_vwap = vwap_data.iloc[-1]["Institution_VWAP"]
-        if pd.isna(latest_price) or pd.isna(latest_vwap):
-             st.info("无法计算股价与VWAP关系：数据不可用")
-        else:
-            if latest_price > latest_vwap:
-                st.success(f"✅ {'实时' if is_real_data else '模拟'}股价高于机构VWAP，短期强势（缓存30秒）")
-            else:
-                st.warning(f"⚠️ {'实时' if is_real_data else '模拟'}股价低于机构VWAP，短期弱势（缓存30秒）")
-    else:
-        st.info("无法显示分析结论：数据不可用")
-
-# ---------------------- 筹码峰联动（实时） ----------------------
-elif menu_option == "筹码峰联动":
-    st.title("筹码峰与机构VWAP联动分析")
-    st.divider()
-    
-    # 周期选择
-    period = st.slider("分析周期（交易日）", 10, 60, 30, 5)
-    selected_period_str = f"{period}d"
-    
-    # 加载数据
-    stock_data, vwap_data, chip_data, _, is_real_data = load_data_for_page(period=selected_period_str)
-
-    # 数据来源提示
-    if is_real_data:
-        st.success(f"✅ 已加载{period}日真实市场数据用于分析")
-    else:
-        st.warning(f"⚠️ {period}日分析使用模拟数据兜底")
-
-    if not stock_data.empty and not vwap_data.empty and not chip_data.empty:
-        latest_price = stock_data.iloc[-1]["Close"]
-        latest_vwap = vwap_data.iloc[-1]["Institution_VWAP"]
-        peak_price = chip_data.loc[chip_data["筹码占比"].idxmax(), "价格"] if not chip_data.empty else np.nan
+        delta_html = "" # 如果没有涨跌幅（比如恐慌指数），就不显示这一行
         
-        # 双图联动
-        col1, col2 = st.columns([1,2])
-        with col1:
-            st.subheader("筹码分布（基于{'真实' if is_real_data else '模拟'}股价）")
-            fig_chip = go.Figure(go.Bar(
-                y=chip_data["价格"], 
-                x=chip_data["筹码占比"], 
-                orientation='h', # 水平柱状图更清晰
-                marker_color="#ff7f0e"
-            ))
-            fig_chip.add_vline(x=latest_price, line_dash="dash", line_color="red", annotation_text="实时股价")
-            fig_chip.add_vline(x=latest_vwap, line_dash="dash", line_color="blue", annotation_text="机构VWAP")
-            fig_chip.update_layout(height=400, xaxis_title="筹码占比(%)", yaxis_title="价格(美元)")
-            st.plotly_chart(fig_chip, use_container_width=True)
-            if not pd.isna(peak_price):
-                st.write(f"📌 筹码主峰：${peak_price:.2f} | 机构VWAP：${latest_vwap:.2f}（缓存30秒）")
-            else:
-                st.write("📌 筹码主峰：N/A")
-        
-        with col2:
-            st.subheader("实时股价+VWAP+筹码主峰")
-            fig_price = go.Figure()
-            fig_price.add_trace(go.Scatter(
-                x=stock_data["Date"], 
-                y=stock_data["Close"], 
-                name="{'实时' if is_real_data else '模拟'}股价",
-                mode="lines+markers"
-            ))
-            fig_price.add_trace(go.Scatter(
-                x=vwap_data["Date"], 
-                y=vwap_data["Institution_VWAP"], 
-                name="机构VWAP"
-            ))
-            if not pd.isna(peak_price):
-                fig_price.add_hline(y=peak_price, line_dash="dash", line_color="orange", annotation_text="筹码主峰")
-            fig_price.update_layout(height=400, xaxis_title="日期", yaxis_title="价格(美元)", legend=dict(orientation="h"))
-            st.plotly_chart(fig_price, use_container_width=True)
-    else:
-        st.error("数据加载失败，无法显示分析图表。")
+    return f"""
+    <div class="metric-card">
+        <div class="metric-label">{label} {extra_tag}</div>
+        <div class="metric-value">{value_str}</div>
+        {delta_html}
+    </div>
+    """
 
-# ---------------------- 投资工具（实时数据） ----------------------
-elif menu_option == "投资工具":
-    st.title("投资决策辅助工具（实时数据）")
-    st.divider()
+# --- 3. 状态管理 ---
+if 'data_cache' not in st.session_state:
+    st.session_state['data_cache'] = None
+if st.session_state['data_cache'] and 'model' not in st.session_state['data_cache']:
+    st.session_state['data_cache'] = None # 缓存清洗
+
+st.markdown("### ⚡ BTDR 领航员 v7.4")
+
+# --- 4. UI 骨架 (占位符) ---
+ph_time = st.empty()
+
+# 核心指标
+c1, c2 = st.columns(2)
+with c1: ph_btc = st.empty()
+with c2: ph_fng = st.empty()
+
+st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+st.caption("⚒️ 矿股板块 Beta")
+cols = st.columns(5)
+ph_peers = [col.empty() for col in cols]
+
+st.markdown("---")
+
+c3, c4 = st.columns(2)
+with c3: ph_btdr_price = st.empty()
+with c4: ph_btdr_open = st.empty()
+
+st.markdown("### 🎯 AI 托管预测")
+col_h, col_l = st.columns(2)
+with col_h: ph_pred_high = st.empty()
+with col_l: ph_pred_low = st.empty()
+
+st.markdown("---")
+ph_footer = st.empty()
+
+# --- 5. 核心逻辑：AI 调参 ---
+@st.cache_data(ttl=3600)
+def auto_tune_model():
+    default_model = {
+        "high": {"intercept": 4.29, "beta_open": 0.67, "beta_btc": 0.52},
+        "low":  {"intercept": -3.22, "beta_open": 0.88, "beta_btc": 0.42},
+        "beta_sector": 0.25
+    }
+    try:
+        df = yf.download("BTDR", period="1mo", interval="1d", progress=False)
+        if len(df) < 10: return default_model, "数据不足"
+        if isinstance(df.columns, pd.MultiIndex): df = df.xs('BTDR', axis=1, level=1)
+        df = df.dropna()
+        df['PrevClose'] = df['Close'].shift(1)
+        df = df.dropna()
+        
+        x = ((df['Open'] - df['PrevClose']) / df['PrevClose'] * 100).values
+        y_high = ((df['High'] - df['PrevClose']) / df['PrevClose'] * 100).values
+        y_low = ((df['Low'] - df['PrevClose']) / df['PrevClose'] * 100).values
+        
+        cov_h = np.cov(x, y_high); beta_h = cov_h[0, 1] / cov_h[0, 0] if cov_h[0, 0] != 0 else 0.67
+        cov_l = np.cov(x, y_low); beta_l = cov_l[0, 1] / cov_l[0, 0] if cov_l[0, 0] != 0 else 0.88
+        
+        beta_h = np.clip(beta_h, 0.3, 1.2)
+        beta_l = np.clip(beta_l, 0.4, 1.5)
+        intercept_h = np.mean(y_high) - beta_h * np.mean(x)
+        intercept_l = np.mean(y_low) - beta_l * np.mean(x)
+        
+        final_model = {
+            "high": {"intercept": 0.7*4.29 + 0.3*intercept_h, "beta_open": 0.7*0.67 + 0.3*beta_h, "beta_btc": 0.52},
+            "low": {"intercept": 0.7*-3.22 + 0.3*intercept_l, "beta_open": 0.7*0.88 + 0.3*beta_l, "beta_btc": 0.42},
+            "beta_sector": 0.25
+        }
+        return final_model, "已自适应"
+    except: return default_model, "默认参数"
+
+# --- 6. 渲染函数 (UI 统一化) ---
+def render_ui(data):
+    if not data: return
+    if 'model' not in data: return 
     
-    # 加载数据
-    stock_data, vwap_data, _, _, is_real_data = load_data_for_page()
-
-    # 数据来源提示
-    if is_real_data:
-        st.success("✅ 投资工具已加载实时市场数据")
-    else:
-        st.warning("⚠️ 投资工具使用模拟数据兜底")
-
-    # 成本测算（实时股价）
-    st.subheader("💰 持仓成本测算（缓存30秒）")
-    if not stock_data.empty and not vwap_data.empty:
-        latest_price = stock_data.iloc[-1]["Close"]
-        institution_vwap = vwap_data.iloc[-1]["Institution_VWAP"]
-        
-        with st.form("cost_calc"):
-            price = st.number_input("你的持仓价格(美元)", float(latest_price*0.8), float(latest_price*1.2), latest_price, 0.1)
-            num = st.number_input("持仓数量(股)", 100, 10000, 1000, 100)
-            fee = st.number_input("手续费率(%)", 0.01, 1.0, 0.1, 0.01)
-            submit = st.form_submit_button("计算（基于实时股价）")
+    quotes = data['quotes']
+    fng_val = data['fng']
+    model_params = data['model']
+    model_status = data['model_status']
+    
+    btc_chg = quotes['BTC-USD']['pct']
+    btdr = quotes['BTDR']
+    
+    # 时间
+    tz_bj = pytz.timezone('Asia/Shanghai')
+    tz_ny = pytz.timezone('America/New_York')
+    now_bj = datetime.now(tz_bj).strftime('%H:%M:%S')
+    now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
+    ph_time.markdown(f"<div class='time-bar'>北京 {now_bj} &nbsp;|&nbsp; 美东 {now_ny} &nbsp;|&nbsp; AI {model_status}</div>", unsafe_allow_html=True)
+    
+    # --- 1. 核心指标 (使用统一 HTML) ---
+    ph_btc.markdown(card_html("BTC (全时段)", f"{btc_chg:+.2f}%", f"{btc_chg:+.2f}%", btc_chg), unsafe_allow_html=True)
+    # 恐慌指数没有涨跌幅，只显示数值
+    ph_fng.markdown(card_html("恐慌指数", f"{fng_val}", None, 0), unsafe_allow_html=True)
+    
+    # --- 2. 板块 (使用统一 HTML) ---
+    peers = ["MARA", "RIOT", "CORZ", "CLSK", "IREN"]
+    for i, p in enumerate(peers):
+        if p in quotes:
+            val = quotes[p]['pct']
+            ph_peers[i].markdown(card_html(p, f"{val:+.1f}%", f"{val:+.1f}%", val), unsafe_allow_html=True)
             
-            if submit:
-                profit = (latest_price - price) * num - (price * num * fee/100)
-                diff = (price - institution_vwap)/institution_vwap*100
+    # --- 3. 预测计算 ---
+    valid_peers = [p for p in peers if quotes[p]['price'] > 0]
+    peers_avg = sum(quotes[p]['pct'] for p in valid_peers) / len(valid_peers) if valid_peers else 0
+    sector_alpha = peers_avg - btc_chg
+    sentiment_adj = (fng_val - 50) * 0.02
+    
+    pred_high_price, pred_low_price, pred_high_pct, pred_low_pct, btdr_open_pct = 0,0,0,0,0
+    
+    if btdr['price'] > 0:
+        btdr_open_pct = ((btdr['open'] - btdr['prev']) / btdr['prev']) * 100
+        MODEL = model_params
+        pred_high_pct = (MODEL['high']['intercept'] + (MODEL['high']['beta_open'] * btdr_open_pct) + (MODEL['high']['beta_btc'] * btc_chg) + (MODEL['beta_sector'] * sector_alpha) + sentiment_adj)
+        pred_low_pct = (MODEL['low']['intercept'] + (MODEL['low']['beta_open'] * btdr_open_pct) + (MODEL['low']['beta_btc'] * btc_chg) + (MODEL['beta_sector'] * sector_alpha) + sentiment_adj)
+        pred_high_price = btdr['prev'] * (1 + pred_high_pct / 100)
+        pred_low_price = btdr['prev'] * (1 + pred_low_pct / 100)
+
+    # --- 4. BTDR 本体 (使用统一 HTML) ---
+    state_map = {"PRE": "dot-pre", "REG": "dot-reg", "POST": "dot-post", "CLOSED": "dot-closed"}
+    dot_class = state_map.get(btdr.get('tag', 'CLOSED'), 'dot-closed')
+    status_tag = f"<span class='status-dot {dot_class}'></span> <span style='margin-left:2px; font-size:0.7rem;'>{btdr.get('tag', 'CLOSED')}</span>"
+    
+    ph_btdr_price.markdown(card_html("BTDR 实时", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
+    
+    # 这里的"计算用开盘"也换成了统一大字号卡片
+    ph_btdr_open.markdown(card_html("计算用开盘", f"${btdr['open']:.2f}", f"{btdr_open_pct:+.2f}%", btdr_open_pct), unsafe_allow_html=True)
+    
+    # --- 5. 预测框 ---
+    h_bg = "#e6fcf5" if btdr['price'] < pred_high_price else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < pred_high_price else "#ffffff"
+    l_bg = "#fff5f5" if btdr['price'] > pred_low_price else "#e03131"; l_txt = "#c92a2a" if btdr['price'] > pred_low_price else "#ffffff"
+
+    ph_pred_high.markdown(f"""
+    <div class="pred-container-wrapper">
+        <div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;">
+            <div style="font-size: 0.8rem; opacity: 0.8;">阻力位 (High)</div>
+            <div style="font-size: 1.5rem; font-weight: bold;">${pred_high_price:.2f}</div>
+            <div style="font-size: 0.75rem; opacity: 0.9;">预期: {pred_high_pct:+.2f}%</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    ph_pred_low.markdown(f"""
+    <div class="pred-container-wrapper">
+        <div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;">
+            <div style="font-size: 0.8rem; opacity: 0.8;">支撑位 (Low)</div>
+            <div style="font-size: 1.5rem; font-weight: bold;">${pred_low_price:.2f}</div>
+            <div style="font-size: 0.75rem; opacity: 0.9;">预期: {pred_low_pct:+.2f}%</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    ph_footer.caption(f"Update: {now_ny} ET | Auto-Tuned by AI")
+
+# --- 7. 数据获取 ---
+@st.cache_data(ttl=5)
+def get_data_v74():
+    tickers_list = "BTC-USD BTDR MARA RIOT CORZ CLSK IREN"
+    try:
+        daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=True, progress=False)
+        live = yf.download(tickers_list, period="1d", interval="1m", prepost=True, group_by='ticker', threads=True, progress=False)
+        quotes = {}
+        symbols = tickers_list.split()
+        today_ny = datetime.now(pytz.timezone('America/New_York')).date()
+        
+        for sym in symbols:
+            try:
+                df_day = daily[sym] if sym in daily else pd.DataFrame()
+                if not df_day.empty: df_day = df_day.dropna(subset=['Close'])
+                df_min = live[sym] if sym in live else pd.DataFrame()
+                if not df_min.empty: df_min = df_min.dropna(subset=['Close'])
                 
-                col1, col2, col3 = st.columns(3)
-                with col1: st.metric("实时浮盈/浮亏", f"${profit:.2f}")
-                with col2: st.metric("与机构成本价差", f"{diff:.2f}%")
-                with col3: st.metric("当前实时股价", f"${latest_price:.2f}")
-    else:
-        st.warning("数据不可用，无法进行成本测算。")
+                # 实时价
+                state = "REG" if not df_min.empty else "CLOSED"
+                current_price = df_min['Close'].iloc[-1] if not df_min.empty else (df_day['Close'].iloc[-1] if not df_day.empty else 0)
+                
+                # 昨收
+                prev_close = 1.0
+                if not df_day.empty:
+                    last_date = df_day.index[-1].date()
+                    if last_date == today_ny:
+                        if len(df_day) >= 2: prev_close = df_day['Close'].iloc[-2]
+                        elif not df_day.empty: prev_close = df_day['Open'].iloc[-1]
+                    else: prev_close = df_day['Close'].iloc[-1]
+                
+                pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
+                open_price = df_day['Open'].iloc[-1] if not df_day.empty and df_day.index[-1].date() == today_ny else current_price
+                quotes[sym] = {"price": current_price, "pct": pct, "prev": prev_close, "open": open_price, "tag": state}
+            except: quotes[sym] = {"price": 0, "pct": 0, "prev": 0, "open": 0, "tag": "ERR"}
+        return quotes
+    except: return None
 
-    # 情景模拟（实时基准）
-    st.subheader("📊 行情情景模拟（基于实时股价）")
-    if not stock_data.empty:
-        btc_change = st.selectbox("BTC价格变动", ["-20%", "-10%", "0%", "+10%", "+20%"])
-        prod = st.selectbox("SEAL04量产进度", ["延期1个月", "如期量产", "提前量产"])
-        
-        if st.button("生成模拟结果"):
-            impact = float(btc_change.strip("%")) * 0.5 + (3 if prod=="提前量产" else (-3 if prod=="延期1个月" else 0))
-            simulate_price = latest_price * (1 + impact/100)
-            st.metric(
-                label="模拟股价（基于实时基准）",
-                value=f"${simulate_price:.2f}",
-                delta=f"{impact:.1f}%",
-                help="实时基准价：$"+str(round(latest_price,2))
-            )
-    else:
-        st.warning("数据不可用，无法进行情景模拟。")
+# --- 8. 执行流 ---
+if st.session_state['data_cache']: render_ui(st.session_state['data_cache'])
+else: ph_time.info("📡 正在统一视觉系统...")
 
-# ---------------------- 财务&运营数据（真实+静态） ----------------------
-elif menu_option == "财务&运营数据":
-    st.title("财务与运营数据详情（真实披露）")
-    st.divider()
-    
-    fundamental = get_fundamental_data()
-    tab1, tab2, tab3 = st.tabs(["财务指标（真实）", "运营指标（真实）", "核心产品"])
-    
-    with tab1:
-        st.dataframe(pd.DataFrame(fundamental["财务指标"]), use_container_width=True)
-        st.write("💡 Q3净亏损含非现金衍生品损失，核心业务（挖矿+AI）已实现EBITDA转正（真实披露）")
-    
-    with tab2:
-        st.dataframe(pd.DataFrame(fundamental["运营指标"]), use_container_width=True)
-        # 运营趋势（真实披露）
-        st.subheader("算力趋势（真实披露）")
-        trend_data = pd.DataFrame({
-            "月份": ["9月", "10月", "11月", "12月E", "2026-01E"],
-            "算力（EH/s）": [32.1, 38.5, 45.7, 52.0, 60.0]  # 真实披露数据
-        })
-        fig_power = go.Figure(go.Bar(x=trend_data["月份"], y=trend_data["算力（EH/s）"]))
-        fig_power.update_layout(height=250)
-        st.plotly_chart(fig_power, use_container_width=True)
-        
-        st.subheader("BTC产出趋势（真实披露）")
-        btc_trend = pd.DataFrame({
-            "月份": ["9月", "10月", "11月", "12月E", "2026-01E"],
-            "BTC产出（枚）": [312, 389, 526, 610, 720]  # 真实披露数据
-        })
-        fig_btc = go.Figure(go.Scatter(x=btc_trend["月份"], y=btc_trend["BTC产出（枚）"], line_color="#ff7f0e", mode='lines+markers'))
-        fig_btc.update_layout(height=250)
-        st.plotly_chart(fig_btc, use_container_width=True)
-    
-    with tab3:
-        st.dataframe(pd.DataFrame(fundamental["核心产品"]), use_container_width=True)
-        st.write("🎯 核心竞争力：自研芯片提升能效（真实披露），降低挖矿成本；AI/HPC转型打开长期增长空间")
+new_quotes = get_data_v74()
+ai_model, ai_status = auto_tune_model()
 
-# ---------------------- 风险提示 ----------------------
-elif menu_option == "风险提示":
-    st.title("风险提示与免责声明")
-    st.divider()
-    
-    st.warning("""
-    ### 🔴 主要风险因素（基于真实市场）
-    1. **加密货币价格波动风险**：BTC价格直接影响挖矿收益，若BTC价格大幅下跌，可能导致公司营收与利润下滑；
-    2. **量产与技术风险**：SEAL04芯片量产进度、良率可能不及预期，影响算力扩张与成本控制；
-    3. **监管风险**：全球加密货币挖矿与AI算力服务监管政策变化，可能影响业务开展；
-    4. **盈利转化风险**：当前公司仍处于亏损状态，核心业务盈利能否持续转正存在不确定性；
-    5. **股价波动风险**：小盘股股价波动性高，可能受市场情绪、资金流向影响出现大幅波动。
-    """)
-    
-    st.info("""
-    ### 📝 免责声明
-    1. 本页面实时股价数据来源于Yahoo Finance，财务/运营数据来源于公司公开披露，仅为分析参考，不构成任何投资建议；
-    2. 模拟数据（如机构VWAP、筹码峰）为基于公开逻辑的估算，实际数据请以官方披露为准；
-    3. 数据缓存30秒刷新，真实市场数据更新频率以交易所为准；
-    4. 投资有风险，入市需谨慎，请勿根据本页面信息盲目决策，建议结合专业投资顾问意见。
-    """)
-    
-    # 用户反馈
-    st.subheader("💬 功能反馈")
-    with st.form(key="feedback_form"):
-        feedback = st.text_area("请输入你的功能建议或问题（针对实时数据/刷新功能）")
-        submit_feedback = st.form_submit_button("提交反馈")
-        if submit_feedback:
-            st.success("感谢你的反馈！我们会持续优化实时数据体验～")
-
-# ---------------------- 页脚（刷新提示） ----------------------
-st.divider()
-times = get_formatted_times()
-st.write(f"📅 最后刷新时间：{times['beijing_date']} {times['beijing']} (北京) | {times['eastern_date']} {times['eastern']} (美东) | 📈 数据来源：Yahoo Finance（真实）+ 公司披露")
-st.write(f"🔄 数据缓存时长：30秒 | 点击侧边栏「手动刷新数据」按钮获取最新数据")
+if new_quotes:
+    try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1).json()['data'][0]['value'])
+    except: fng = 50
+    st.session_state['data_cache'] = {'quotes': new_quotes, 'fng': fng, 'model': ai_model, 'model_status': ai_status}
+    render_ui(st.session_state['data_cache'])
