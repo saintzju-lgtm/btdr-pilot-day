@@ -71,7 +71,7 @@ CUSTOM_CSS = """
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# --- 2. 核心数据引擎 (v14.0) ---
+# --- 2. 核心数据引擎 (v14.0 Fixed) ---
 @st.cache_data(ttl=60)
 def get_market_data():
     # 初始化防报错默认值
@@ -336,7 +336,13 @@ def main():
         if not hist.empty:
             review_df = hist.tail(5)[['Close', 'Volume']].copy()
             review_df['Signal'] = review_df['Close'].apply(lambda x: "持有" if x > 0 else "") # 简单模拟
-            st.dataframe(review_df.style.format("{:.2f}"))
+            # 修复格式化问题：针对具体列使用 format
+            st.dataframe(
+                review_df.style.format({
+                    "Close": "{:.2f}",
+                    "Volume": "{:.0f}"
+                })
+            )
     
     with st.expander("⚙️ 参数微调"):
         col_a, col_b = st.columns(2)
