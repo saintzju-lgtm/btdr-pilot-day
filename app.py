@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.11 Complete", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.12 Fix", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -19,8 +19,10 @@ CUSTOM_CSS = """
     .stApp { margin-top: -30px; background-color: #ffffff; }
     div[data-testid="stStatusWidget"] { visibility: hidden; }
     
-    h1, h2, h3, div, p, span { 
-        color: #212529 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; 
+    /* --- FIX: 移除全局强制样式，修复图标字体显示错误 --- */
+    .stApp {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        color: #212529;
     }
     
     div[data-testid="stAltairChart"] {
@@ -163,12 +165,13 @@ CUSTOM_CSS = """
     .tag-bear { color: #c92a2a; background: #fff5f5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
     .tag-neu { color: #666; background: #f1f3f5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
     
-    /* Expander Style */
+    /* Expander Style Fixed */
     .streamlit-expanderHeader {
         font-size: 0.8rem !important;
         color: #555 !important;
         background-color: #f8f9fa !important;
         border-radius: 6px !important;
+        border: 1px solid #eee !important;
     }
 </style>
 """
@@ -479,7 +482,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.11 Complete"
+        return final_model, factors, "v13.12 Fix"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -727,7 +730,7 @@ def show_live_dashboard():
         <div style="margin-bottom:8px;"></div>
         """, unsafe_allow_html=True)
 
-        # 2. 详细解读 Expander
+        # 2. 详细解读 Expander (已修复箭头重叠问题)
         with st.expander("💡 它是如何工作的？(实战解读指南)"):
             st.markdown(f"""
             <div style='font-size: 0.85rem; color: #444; line-height: 1.6;'>
@@ -868,7 +871,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.11 Complete | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.12 Fix | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.11 Complete")
+st.markdown("### ⚡ BTDR 领航员 v13.12 Fix")
 show_live_dashboard()
