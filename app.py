@@ -8,7 +8,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 核心样式 ---
-st.set_page_config(page_title="BTDR Pilot v14.0 Trader", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v14.1 Fix", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -71,7 +71,7 @@ CUSTOM_CSS = """
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# --- 2. 核心数据引擎 (v14.0 Fixed) ---
+# --- 2. 核心数据引擎 (v14.1) ---
 @st.cache_data(ttl=60)
 def get_market_data():
     # 初始化防报错默认值
@@ -194,12 +194,8 @@ def render_top_section(data, signal, sig_bg, sig_desc):
     if "止盈" in signal: action_text = "止盈 50%"
     if "减仓" in signal: action_text = "减仓 30%"
     
-    # 背景色样式处理
     bg_style = ""
-    if "bg-" in sig_bg:
-        # 使用CSS类控制
-        pass 
-    else:
+    if "bg-" not in sig_bg:
         bg_style = f"background-color: {sig_bg};"
 
     html = f"""
@@ -244,16 +240,13 @@ def render_plan_card(title, price_range, status, type="stop"):
 def render_probability_chart(data):
     # 构造正态分布数据 (PDF)
     mean = data['price']
-    std = data['price'] * data['volatility'] * 2 # 放大一点波动率以便展示区间
+    std = data['price'] * data['volatility'] * 2 
     
     x = np.linspace(mean - 4*std, mean + 4*std, 200)
     y = norm.pdf(x, mean, std)
     
     df = pd.DataFrame({'Price': x, 'Probability': y})
     
-    # 定义区间颜色
-    # 低吸区：Price < Boll_L
-    # 止盈区：Price > Boll_U
     df['Zone'] = '中性持有'
     df.loc[df['Price'] <= data['boll_l'], 'Zone'] = '低吸区 (Support)'
     df.loc[df['Price'] >= data['boll_u'], 'Zone'] = '止盈区 (Resist)'
@@ -264,7 +257,7 @@ def render_probability_chart(data):
         y=alt.Y('Probability', axis=None),
         color=alt.Color('Zone', scale=alt.Scale(
             domain=['低吸区 (Support)', '中性持有', '止盈区 (Resist)'],
-            range=['#0ca678', '#e9ecef', '#d6336c'] # 绿吸，灰持，红抛
+            range=['#0ca678', '#e9ecef', '#d6336c'] 
         ), legend=None)
     )
     
@@ -282,6 +275,7 @@ def render_probability_chart(data):
     level_rules = alt.Chart(levels).mark_rule(strokeWidth=1).encode(x='x', color=alt.Color('color', scale=None))
     level_texts = alt.Chart(levels).mark_text(dy=-50, dx=5, align='left').encode(x='x', text='label', color='color')
 
+    # FIX: Updated width parameter
     st.altair_chart((area + curr_line + curr_text + level_rules + level_texts).properties(height=220), use_container_width=True)
 
 # --- 5. 主程序 ---
@@ -336,10 +330,11 @@ def main():
         if not hist.empty:
             review_df = hist.tail(5)[['Close', 'Volume']].copy()
             review_df['Signal'] = review_df['Close'].apply(lambda x: "持有" if x > 0 else "") # 简单模拟
-            # 修复格式化问题：针对具体列使用 format
+            
+            # --- 修复点：使用字典精确控制格式化，跳过字符串列 ---
             st.dataframe(
                 review_df.style.format({
-                    "Close": "{:.2f}",
+                    "Close": "{:.2f}", 
                     "Volume": "{:.0f}"
                 })
             )
