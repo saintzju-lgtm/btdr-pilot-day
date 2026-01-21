@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.8 Real-Time", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.10 Intent", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -150,6 +150,18 @@ CUSTOM_CSS = """
     .scen-prob { font-size: 0.65rem; background: rgba(0,0,0,0.05); padding: 1px 4px; border-radius: 3px; }
 
     .tag-smart { background: #228be6; color: white; padding: 1px 5px; border-radius: 4px; font-size: 0.6rem; vertical-align: middle; margin-left: 5px; }
+    
+    /* Intent Box */
+    .intent-box {
+        background-color: #fff; border-left: 4px solid #333;
+        padding: 12px; margin-top: 8px; border-radius: 6px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+    }
+    .intent-title { font-weight: bold; font-size: 0.9rem; margin-bottom: 4px; display: flex; align-items: center; gap: 6px; }
+    .intent-desc { font-size: 0.8rem; color: #555; line-height: 1.5; }
+    .tag-bull { color: #099268; background: #e6fcf5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
+    .tag-bear { color: #c92a2a; background: #fff5f5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
+    .tag-neu { color: #666; background: #f1f3f5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -229,33 +241,27 @@ def get_options_data(symbol, current_price):
         
         sorted_dates = sorted(exps)
         today = datetime.now()
-        cutoff_date = today + timedelta(days=45) # 只看未来45天的数据，绝对实战
+        cutoff_date = today + timedelta(days=45) 
         
         calls_list = []
         puts_list = []
-        
-        # 1. Aggregation (聚合): 将近期所有到期日的数据合并
-        # 即使单周流动性差，聚合后也能看到主力资金的整体布局
         valid_dates = []
         
         for d in sorted_dates:
             d_obj = datetime.strptime(d, '%Y-%m-%d')
             if d_obj < today: continue
-            if d_obj > cutoff_date: break # 超过45天直接停止，不看明年
+            if d_obj > cutoff_date: break 
             
             chain = tk.option_chain(d)
             if not chain.calls.empty: calls_list.append(chain.calls)
             if not chain.puts.empty: puts_list.append(chain.puts)
             valid_dates.append(d)
             
-        if not calls_list or not puts_list:
-            return None # 近期完全无数据，直接返回空，绝不显示误导数据
+        if not calls_list or not puts_list: return None 
 
-        # 合并所有近期的 Call 和 Put
         all_calls = pd.concat(calls_list)
         all_puts = pd.concat(puts_list)
         
-        # 2. 价格区间强力清洗 (±30% 范围)
         lower_bound = current_price * 0.7
         upper_bound = current_price * 1.3
         
@@ -265,44 +271,33 @@ def get_options_data(symbol, current_price):
         if c_clean.empty: c_clean = all_calls
         if p_clean.empty: p_clean = all_puts
         
-        # 3. PCR (聚合后的成交量)
         total_call_vol = all_calls['volume'].sum() if not all_calls.empty else 1
         total_put_vol = all_puts['volume'].sum() if not all_puts.empty else 0
         pcr_vol = total_put_vol / total_call_vol
         
-        # 4. Max Pain (基于聚合数据计算近期总痛点)
         strikes = set(c_clean['strike']).union(set(p_clean['strike']))
         min_loss = float('inf'); max_pain = current_price
         
-        # 优化算法：加权 Open Interest
         if strikes:
             for k in strikes:
-                # 针对每个 strike，计算如果结算价是 k，全场 Call 和 Put 的总亏损
                 call_loss = c_clean[c_clean['strike'] < k].apply(lambda x: (k - x['strike']) * x['openInterest'], axis=1).sum()
                 put_loss = p_clean[p_clean['strike'] > k].apply(lambda x: (x['strike'] - k) * x['openInterest'], axis=1).sum()
                 total_loss = call_loss + put_loss
                 if total_loss < min_loss: 
                     min_loss = total_loss; max_pain = k
         
-        # 5. Effective Walls (必须是 OTM)
-        # Call Wall: 现价上方最大OI
         calls_above = c_clean[c_clean['strike'] > current_price]
         if not calls_above.empty:
-            # Group by strike 汇总不同到期日的同一行权价
             call_oi_map = calls_above.groupby('strike')['openInterest'].sum()
             call_wall = call_oi_map.idxmax()
-        else:
-            call_wall = current_price * 1.1
+        else: call_wall = current_price * 1.1
 
-        # Put Wall: 现价下方最大OI
         puts_below = p_clean[p_clean['strike'] < current_price]
         if not puts_below.empty:
             put_oi_map = puts_below.groupby('strike')['openInterest'].sum()
             put_wall = put_oi_map.idxmax()
-        else:
-            put_wall = current_price * 0.9
+        else: put_wall = current_price * 0.9
 
-        # 格式化显示日期范围
         date_display = f"{len(valid_dates)} Exps (<45d)"
 
         return {
@@ -313,6 +308,39 @@ def get_options_data(symbol, current_price):
     except Exception as e:
         print(f"Options Error: {e}")
         return None
+
+# --- NEW: 庄家意图生成引擎 ---
+def get_mm_intent(price, mp, cw, pw, pcr):
+    gap_mp = (price - mp) / price
+    
+    # 1. 判断是否触墙 (Wall Logic has priority)
+    if price >= cw * 0.98:
+        title = "♟️ 庄家意图: 铁壁防守 (Defend Call Wall)"
+        desc = f"股价逼近最大阻力位 ${cw}，做市商Gamma风险剧增。预计将出现强抛压以防守此位置，除非成交量剧增引发Gamma Squeeze。"
+        color = "tag-bear"
+        return title, desc, color
+        
+    if price <= pw * 1.02:
+        title = "♟️ 庄家意图: 底部承接 (Support Put Wall)"
+        desc = f"股价跌至最大支撑位 ${pw}，做市商需买入现货对冲Put头寸，此处易形成短期反弹。"
+        color = "tag-bull"
+        return title, desc, color
+
+    # 2. 判断 Max Pain 引力 (Gravity Logic)
+    if gap_mp > 0.15: # Price >> MP
+        title = "♟️ 庄家意图: 诱多杀跌 (Suppress to Pain)"
+        desc = f"现价(${price:.2f}) 远高于痛点(${mp:.1f})。做市商卖出的Call处于亏损边缘，有强烈动力打压股价，收割多头权利金。"
+        color = "tag-bear"
+    elif gap_mp < -0.15: # Price << MP
+        title = "♟️ 庄家意图: 诱空拉升 (Lift to Pain)"
+        desc = f"现价(${price:.2f}) 远低于痛点(${mp:.1f})。做市商卖出的Put处于亏损边缘，有动力拉升股价，收割空头权利金。"
+        color = "tag-bull"
+    else: # Price ~= MP
+        title = "♟️ 庄家意图: 横盘收租 (Theta Burn)"
+        desc = f"现价处于痛点(${mp:.1f}) 舒适区。做市商只需维持震荡，利用时间损耗 (Theta) 同时收割多空双方。"
+        color = "tag-neu"
+        
+    return title, desc, color
 
 @st.cache_data(ttl=300)
 def run_grandmaster_analytics(live_price=None):
@@ -334,10 +362,8 @@ def run_grandmaster_analytics(live_price=None):
         idx = btdr.index.intersection(btc.index).intersection(qqq.index)
         btdr, btc, qqq = btdr.loc[idx], btc.loc[idx], qqq.loc[idx]
         
-        # Data Cleaning
         btdr.index = btdr.index.tz_localize(None)
         
-        # Real-time Injection
         if live_price and live_price > 0:
             last_date = btdr.index[-1].date(); today = datetime.now().date()
             last_row = btdr.iloc[-1].copy()
@@ -440,7 +466,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.8 Real-Time"
+        return final_model, factors, "v13.10 Intent"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -606,7 +632,7 @@ def show_live_dashboard():
 
     ai_model, factors, ai_status = run_grandmaster_analytics(live_price)
     
-    # 异步获取期权数据 (v13.8 Real-Time Aggregation)
+    # 异步获取期权数据
     opt_data = get_options_data('BTDR', live_price)
     
     regime_tag = factors['regime']
@@ -651,7 +677,7 @@ def show_live_dashboard():
         turnover_rate = (data['volume'] / (shares_m * 1000000)) * 100
         cols[i].markdown(miner_card_html(p, data['price'], data['pct'], turnover_rate), unsafe_allow_html=True)
     
-    # --- OPTIONS RADAR (AGGREGATED & REAL-TIME) ---
+    # --- OPTIONS RADAR & INTENT ENGINE ---
     if opt_data:
         st.markdown("---")
         st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>📡 期权雷达 (Real-Time Aggregate)</div>", unsafe_allow_html=True)
@@ -677,6 +703,18 @@ def show_live_dashboard():
             <div style="width:{call_pct}%; height:100%; background:#2f9e44;"></div>
         </div>
         """, unsafe_allow_html=True)
+
+        # --- INTENT ENGINE BOX ---
+        i_title, i_desc, i_color = get_mm_intent(btdr['price'], opt_data['max_pain'], opt_data['call_wall'], opt_data['put_wall'], opt_data['pcr'])
+        st.markdown(f"""
+        <div class="intent-box">
+            <div class="intent-title">{i_title}</div>
+            <div class="intent-desc">{i_desc}</div>
+        </div>
+        <div style="margin-bottom:15px;"></div>
+        """, unsafe_allow_html=True)
+        # -------------------------
+
     elif live_price > 0:
          st.markdown("---")
          st.info("⚠️ 近期 (45天内) 期权数据不足，暂不展示误导信息。请关注正股走势。")
@@ -803,7 +841,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.8 Real-Time | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.10 Intent | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.8 Real-Time")
+st.markdown("### ⚡ BTDR 领航员 v13.10 Intent")
 show_live_dashboard()
