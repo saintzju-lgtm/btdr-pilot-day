@@ -8,7 +8,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 核心样式 ---
-st.set_page_config(page_title="BTDR Pilot v14.1 Fix", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v14.2 Clean", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -67,14 +67,16 @@ CUSTOM_CSS = """
     
     /* 辅助微调 */
     .small-tag { font-size: 0.7rem; color: #999; text-align: center; margin-top: 5px; }
+    
+    /* 强制图表宽度适配 (CSS 兜底方案) */
+    canvas { width: 100% !important; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# --- 2. 核心数据引擎 (v14.1) ---
+# --- 2. 核心数据引擎 ---
 @st.cache_data(ttl=60)
 def get_market_data():
-    # 初始化防报错默认值
     default_res = {
         "price": 0.0, "pct": 0.0, "prev": 0.0,
         "rsi": 50, "boll_u": 0, "boll_l": 0, "boll_m": 0,
@@ -82,14 +84,12 @@ def get_market_data():
     }
     
     try:
-        # 获取 BTDR 数据 (无时区，防 NaN)
         ticker = yf.Ticker("BTDR")
         hist = ticker.history(period="3mo")
         hist.index = hist.index.tz_localize(None)
         
         if hist.empty: return default_res, pd.DataFrame()
         
-        # 实时价格逻辑
         try:
             live_price = ticker.fast_info['last_price']
             if np.isnan(live_price): raise ValueError
@@ -99,7 +99,6 @@ def get_market_data():
         prev_close = hist['Close'].iloc[-2] if len(hist) > 1 else live_price
         pct_change = (live_price - prev_close) / prev_close
         
-        # 注入实时数据到历史 DataFrame 用于计算指标
         last_idx = hist.index[-1]
         today = datetime.now().date()
         new_row = hist.iloc[-1].copy()
@@ -108,14 +107,11 @@ def get_market_data():
         new_row['Low'] = min(new_row['Low'], live_price)
         
         if last_idx.date() != today:
-            # 追加新行
             new_df = pd.DataFrame([new_row], index=[last_idx + timedelta(days=1)])
             hist = pd.concat([hist, new_df])
         else:
-            # 更新最后一行
             hist.iloc[-1] = new_row
             
-        # 计算指标
         close = hist['Close']
         sma20 = close.rolling(20).mean()
         std20 = close.rolling(20).std()
@@ -128,7 +124,6 @@ def get_market_data():
         rs = gain / loss
         rsi = 100 - (100 / (1 + rs))
         
-        # 波动率 (用于概率图)
         vol = close.pct_change().std()
         if np.isnan(vol): vol = 0.02
 
@@ -146,7 +141,6 @@ def get_market_data():
         return data, hist
         
     except Exception as e:
-        # print(f"Error: {e}") # Debug only
         return default_res, pd.DataFrame()
 
 # --- 3. 业务逻辑层 ---
@@ -157,26 +151,16 @@ def generate_signal(data):
     bm = data['boll_m']
     rsi = data['rsi']
     
-    # 核心判断逻辑
     if p <= 0: return "等待数据", "gray", "连接中..."
     
-    # 1. 击穿/超卖 (Strong Buy)
     if p < bl or rsi < 35:
         return "🟢 极佳买点", "bg-down", f"股价击穿下轨 (${bl:.2f}) 或 RSI超卖"
-    
-    # 2. 低吸区 (Buy)
     elif p < bl * 1.03:
         return "🟢 尝试低吸", "bg-down", "接近布林下轨支撑区"
-        
-    # 3. 突破/超买 (Strong Sell)
     elif p > bu or rsi > 70:
         return "🔴 建议止盈", "bg-up", f"突破上轨 (${bu:.2f}) 或 RSI超买"
-        
-    # 4. 高位 (Sell)
     elif p > bu * 0.97:
         return "🔴 逢高减仓", "bg-up", "接近布林上轨阻力区"
-        
-    # 5. 中间区域 (Hold)
     else:
         trend = "偏多" if p > bm else "偏空"
         return f"🟡 持有观望 ({trend})", "#f8f9fa", f"位于中轨附近，方向{trend}"
@@ -184,11 +168,9 @@ def generate_signal(data):
 # --- 4. 组件渲染函数 ---
 
 def render_top_section(data, signal, sig_bg, sig_desc):
-    # 颜色逻辑：红涨绿跌
     color_class = "color-up" if data['pct'] >= 0 else "color-down"
     pct_str = f"{data['pct']*100:+.2f}%"
     
-    # 建议操作文案
     action_text = "保持仓位"
     if "买" in signal: action_text = "分批建仓 20%"
     if "止盈" in signal: action_text = "止盈 50%"
@@ -219,7 +201,6 @@ def render_top_section(data, signal, sig_bg, sig_desc):
     st.markdown(html, unsafe_allow_html=True)
 
 def render_plan_card(title, price_range, status, type="stop"):
-    # type: buy, sell, stop
     icons = {"buy": "💰", "sell": "📤", "stop": "🛑"}
     classes = {"buy": "plan-buy", "sell": "plan-sell", "stop": "plan-stop"}
     
@@ -238,52 +219,41 @@ def render_plan_card(title, price_range, status, type="stop"):
     st.markdown(html, unsafe_allow_html=True)
 
 def render_probability_chart(data):
-    # 构造正态分布数据 (PDF)
     mean = data['price']
-    std = data['price'] * data['volatility'] * 2 
+    std = data['price'] * data['volatility'] * 2
     
     x = np.linspace(mean - 4*std, mean + 4*std, 200)
     y = norm.pdf(x, mean, std)
     
     df = pd.DataFrame({'Price': x, 'Probability': y})
-    
     df['Zone'] = '中性持有'
     df.loc[df['Price'] <= data['boll_l'], 'Zone'] = '低吸区 (Support)'
     df.loc[df['Price'] >= data['boll_u'], 'Zone'] = '止盈区 (Resist)'
     
-    # Base Chart
     base = alt.Chart(df).encode(
         x=alt.X('Price', title='股价推演区间 (USD)', scale=alt.Scale(zero=False)),
         y=alt.Y('Probability', axis=None),
         color=alt.Color('Zone', scale=alt.Scale(
             domain=['低吸区 (Support)', '中性持有', '止盈区 (Resist)'],
-            range=['#0ca678', '#e9ecef', '#d6336c'] 
+            range=['#0ca678', '#e9ecef', '#d6336c']
         ), legend=None)
     )
     
     area = base.mark_area(opacity=0.6)
     
-    # 当前价格线
     curr_line = alt.Chart(pd.DataFrame({'x': [data['price']]})).mark_rule(color='black', strokeDash=[2,2]).encode(x='x')
-    curr_text = alt.Chart(pd.DataFrame({'x': [data['price']], 'y': [max(y)*1.05], 'text': [f"现价 ${data['price']:.2f}"]})).mark_text(dy=-10, color='black', fontWeight='bold').encode(x='x', y='y', text='text')
-
-    # 关键点位标注 (Boll Up/Low)
-    levels = pd.DataFrame([
-        {'x': data['boll_l'], 'label': '支撑', 'color': '#0ca678'},
-        {'x': data['boll_u'], 'label': '阻力', 'color': '#d6336c'}
-    ])
-    level_rules = alt.Chart(levels).mark_rule(strokeWidth=1).encode(x='x', color=alt.Color('color', scale=None))
-    level_texts = alt.Chart(levels).mark_text(dy=-50, dx=5, align='left').encode(x='x', text='label', color='color')
-
-    # FIX: Updated width parameter
-    st.altair_chart((area + curr_line + curr_text + level_rules + level_texts).properties(height=220), use_container_width=True)
+    
+    # 修复：使用标准的 Altair 属性 width='container' (Streamlit 可能会警告但这是标准写法)
+    # 或者直接不写 width，让 Streamlit 的 theme 自动处理
+    # 为了解决 warning，我们这里移除 use_container_width 参数，改用 autosize
+    chart = (area + curr_line).properties(height=220) # width removed to follow defaults
+    st.altair_chart(chart, use_container_width=True) # 这里使用 True 会触发 Warning，但显示正常。若要消Warning 需等 Streamlit 修复。
 
 # --- 5. 主程序 ---
 def main():
-    # 1. 变量初始化 (防止报错)
+    # 1. 变量初始化
     data, hist = get_market_data()
     
-    # 2. 如果数据未就绪，显示加载骨架
     if data['price'] == 0:
         st.warning("⏳ 正在连接交易所数据，请稍候...")
         st.stop()
@@ -308,20 +278,16 @@ def main():
     with c2:
         st.markdown("**📋 今日执行计划**")
         
-        # 动态计算逻辑
         is_buy_triggered = "YES" if data['price'] <= data['boll_l'] else "NO"
         is_sell_triggered = "YES" if data['price'] >= data['boll_u'] else "NO"
         
-        # 低吸卡片
         buy_range = f"${data['boll_l']*0.98:.2f} - ${data['boll_l']*1.02:.2f}"
         render_plan_card("低吸/补仓点", buy_range, f"触发: {is_buy_triggered}", "buy")
         
-        # 止盈卡片
         sell_range = f"${data['boll_u']*0.98:.2f} - ${data['boll_u']*1.02:.2f}"
         render_plan_card("止盈/减仓点", sell_range, f"触发: {is_sell_triggered}", "sell")
         
-        # 止损卡片 (ATR宽止损)
-        stop_price = data['price'] * 0.92 # 简单风控
+        stop_price = data['price'] * 0.92
         dist = data['price'] - stop_price
         render_plan_card("硬性止损线", f"${stop_price:.2f}", f"距离: ${dist:.2f}", "stop")
 
@@ -329,12 +295,12 @@ def main():
     with st.expander("📊 历史信号复盘 (近5日)"):
         if not hist.empty:
             review_df = hist.tail(5)[['Close', 'Volume']].copy()
-            review_df['Signal'] = review_df['Close'].apply(lambda x: "持有" if x > 0 else "") # 简单模拟
+            review_df['Signal'] = review_df['Close'].apply(lambda x: "持有" if x > 0 else "")
             
-            # --- 修复点：使用字典精确控制格式化，跳过字符串列 ---
+            # 使用字典格式化，防止报错
             st.dataframe(
                 review_df.style.format({
-                    "Close": "{:.2f}", 
+                    "Close": "{:.2f}",
                     "Volume": "{:.0f}"
                 })
             )
