@@ -530,6 +530,12 @@ def draw_kline_chart(df, live_price):
 # --- 7. 仪表盘展示 ---
 @st.fragment(run_every=15)
 def show_live_dashboard():
+    # 1. Define CRITICAL variables FIRST to avoid NameError
+    tz_ny = pytz.timezone('America/New_York')
+    now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
+    drift_est = 0.0 # Default value
+    
+    # 2. Get Data
     quotes, fng_val, live_vol_btdr, btdr_hist = get_realtime_data()
     
     live_price = quotes.get('BTDR', {}).get('price', 0)
@@ -541,13 +547,16 @@ def show_live_dashboard():
     btc = quotes.get('BTC-USD', {'pct': 0, 'price': 0}); qqq = quotes.get('QQQ', {'pct': 0})
     vix = quotes.get('^VIX', {'price': 20, 'pct': 0}); btdr = quotes.get('BTDR', {'price': 0})
 
-    # Variable definition safe zone (Prevent NameError)
+    # VWAP Display Logic
     vwap_val = factors['vwap']
     if vwap_val == 0 or np.isnan(vwap_val): vwap_val = btdr['price']
     dist_vwap = ((btdr['price'] - vwap_val) / vwap_val) * 100
     
-    drift_est = (btc['pct']/100 * factors['beta_btc'] * 0.4) + (qqq['pct']/100 * factors['beta_qqq'] * 0.4)
-    if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
+    # Safe drift calculation
+    try:
+        drift_est = (btc['pct']/100 * factors['beta_btc'] * 0.4) + (qqq['pct']/100 * factors['beta_qqq'] * 0.4)
+        if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
+    except: drift_est = 0.0
     
     # Model Calculation
     # Historical mean returns from model
@@ -590,7 +599,7 @@ def show_live_dashboard():
     sell_prob_class = "prob-high" if sell_prob > 60 else ("prob-med" if sell_prob > 30 else "prob-low")
 
     # --- UI Rendering ---
-    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; AI 模式: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: <b>{ai_status}</b></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; AI 模式: <span class='badge-ai'>{factors['regime']}</span> &nbsp;|&nbsp; 引擎: <b>{ai_status}</b></div>", unsafe_allow_html=True)
     st.markdown(action_banner_html(act, reason, sub), unsafe_allow_html=True)
     
     c1, c2 = st.columns(2)
