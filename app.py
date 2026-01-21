@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.7 Strict", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.8 Real-Time", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -228,72 +228,85 @@ def get_options_data(symbol, current_price):
         if not exps: return None
         
         sorted_dates = sorted(exps)
-        today_str = datetime.now().strftime('%Y-%m-%d')
+        today = datetime.now()
+        cutoff_date = today + timedelta(days=45) # 只看未来45天的数据，绝对实战
         
-        target_date = None
-        calls = pd.DataFrame()
-        puts = pd.DataFrame()
-
-        # 1. 强制取最近的有效日期 (避免直接跳到 2026)
-        # 只要有一行数据就认为是有效，宁可数据少，也不能看明年
+        calls_list = []
+        puts_list = []
+        
+        # 1. Aggregation (聚合): 将近期所有到期日的数据合并
+        # 即使单周流动性差，聚合后也能看到主力资金的整体布局
+        valid_dates = []
+        
         for d in sorted_dates:
-            if d < today_str: continue 
+            d_obj = datetime.strptime(d, '%Y-%m-%d')
+            if d_obj < today: continue
+            if d_obj > cutoff_date: break # 超过45天直接停止，不看明年
             
             chain = tk.option_chain(d)
-            if not chain.calls.empty or not chain.puts.empty:
-                target_date = d
-                calls = chain.calls
-                puts = chain.puts
-                break # 找到最近的就立刻停止，绝不往后找
-        
-        if target_date is None: return None
-        if calls.empty and puts.empty: return None
+            if not chain.calls.empty: calls_list.append(chain.calls)
+            if not chain.puts.empty: puts_list.append(chain.puts)
+            valid_dates.append(d)
+            
+        if not calls_list or not puts_list:
+            return None # 近期完全无数据，直接返回空，绝不显示误导数据
 
-        # 2. Max Pain 专用清洗 (只看现价 ±20%)
-        # 这样能剔除 $2.0, $7.5 这种远古期权的干扰，计算出“当下的痛点”
-        mp_lower = current_price * 0.8
-        mp_upper = current_price * 1.2
+        # 合并所有近期的 Call 和 Put
+        all_calls = pd.concat(calls_list)
+        all_puts = pd.concat(puts_list)
         
-        c_mp = calls[(calls['strike'] >= mp_lower) & (calls['strike'] <= mp_upper)]
-        p_mp = puts[(puts['strike'] >= mp_lower) & (puts['strike'] <= mp_upper)]
+        # 2. 价格区间强力清洗 (±30% 范围)
+        lower_bound = current_price * 0.7
+        upper_bound = current_price * 1.3
         
-        # PCR (使用全部数据，反映整体情绪)
-        total_call_vol = calls['volume'].sum() if not calls.empty else 1
-        total_put_vol = puts['volume'].sum() if not puts.empty else 0
+        c_clean = all_calls[(all_calls['strike'] >= lower_bound) & (all_calls['strike'] <= upper_bound)]
+        p_clean = all_puts[(all_puts['strike'] >= lower_bound) & (all_puts['strike'] <= upper_bound)]
+        
+        if c_clean.empty: c_clean = all_calls
+        if p_clean.empty: p_clean = all_puts
+        
+        # 3. PCR (聚合后的成交量)
+        total_call_vol = all_calls['volume'].sum() if not all_calls.empty else 1
+        total_put_vol = all_puts['volume'].sum() if not all_puts.empty else 0
         pcr_vol = total_put_vol / total_call_vol
         
-        # Max Pain 计算
-        strikes = set(c_mp['strike']).union(set(p_mp['strike']))
+        # 4. Max Pain (基于聚合数据计算近期总痛点)
+        strikes = set(c_clean['strike']).union(set(p_clean['strike']))
         min_loss = float('inf'); max_pain = current_price
         
+        # 优化算法：加权 Open Interest
         if strikes:
             for k in strikes:
-                call_loss = c_mp[c_mp['strike'] < k].apply(lambda x: (k - x['strike']) * x['openInterest'], axis=1).sum()
-                put_loss = p_mp[p_mp['strike'] > k].apply(lambda x: (x['strike'] - k) * x['openInterest'], axis=1).sum()
+                # 针对每个 strike，计算如果结算价是 k，全场 Call 和 Put 的总亏损
+                call_loss = c_clean[c_clean['strike'] < k].apply(lambda x: (k - x['strike']) * x['openInterest'], axis=1).sum()
+                put_loss = p_clean[p_clean['strike'] > k].apply(lambda x: (x['strike'] - k) * x['openInterest'], axis=1).sum()
                 total_loss = call_loss + put_loss
                 if total_loss < min_loss: 
                     min_loss = total_loss; max_pain = k
         
-        # 3. Walls 严格逻辑 (Strict Logic)
-        # Call Wall (阻力): 必须 > 现价
-        # Put Wall (支撑): 必须 < 现价
-        
-        # 找阻力
-        calls_above = calls[calls['strike'] > current_price]
+        # 5. Effective Walls (必须是 OTM)
+        # Call Wall: 现价上方最大OI
+        calls_above = c_clean[c_clean['strike'] > current_price]
         if not calls_above.empty:
-            call_wall = calls_above.loc[calls_above['openInterest'].idxmax()]['strike']
+            # Group by strike 汇总不同到期日的同一行权价
+            call_oi_map = calls_above.groupby('strike')['openInterest'].sum()
+            call_wall = call_oi_map.idxmax()
         else:
-            call_wall = current_price * 1.1 # Fallback
-            
-        # 找支撑
-        puts_below = puts[puts['strike'] < current_price]
+            call_wall = current_price * 1.1
+
+        # Put Wall: 现价下方最大OI
+        puts_below = p_clean[p_clean['strike'] < current_price]
         if not puts_below.empty:
-            put_wall = puts_below.loc[puts_below['openInterest'].idxmax()]['strike']
+            put_oi_map = puts_below.groupby('strike')['openInterest'].sum()
+            put_wall = put_oi_map.idxmax()
         else:
-            put_wall = current_price * 0.9 # Fallback
+            put_wall = current_price * 0.9
+
+        # 格式化显示日期范围
+        date_display = f"{len(valid_dates)} Exps (<45d)"
 
         return {
-            "expiry": target_date, "pcr": pcr_vol, "max_pain": max_pain,
+            "expiry": date_display, "pcr": pcr_vol, "max_pain": max_pain,
             "call_wall": call_wall, "put_wall": put_wall,
             "call_vol": total_call_vol, "put_vol": total_put_vol
         }
@@ -427,7 +440,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.7 Strict"
+        return final_model, factors, "v13.8 Real-Time"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -593,7 +606,7 @@ def show_live_dashboard():
 
     ai_model, factors, ai_status = run_grandmaster_analytics(live_price)
     
-    # 异步获取期权数据 (Strict Fix included)
+    # 异步获取期权数据 (v13.8 Real-Time Aggregation)
     opt_data = get_options_data('BTDR', live_price)
     
     regime_tag = factors['regime']
@@ -638,21 +651,21 @@ def show_live_dashboard():
         turnover_rate = (data['volume'] / (shares_m * 1000000)) * 100
         cols[i].markdown(miner_card_html(p, data['price'], data['pct'], turnover_rate), unsafe_allow_html=True)
     
-    # --- OPTIONS RADAR (UI UNCHANGED, LOGIC STRICT) ---
+    # --- OPTIONS RADAR (AGGREGATED & REAL-TIME) ---
     if opt_data:
         st.markdown("---")
-        st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>📡 期权雷达 (Options Flow)</div>", unsafe_allow_html=True)
+        st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>📡 期权雷达 (Real-Time Aggregate)</div>", unsafe_allow_html=True)
         
         pcr_color = "color-down" if opt_data['pcr'] > 1.0 else "color-up"
         mp_delta = opt_data['max_pain'] - btdr['price']
         
         op1, op2, op3, op4 = st.columns(4)
-        with op1: st.markdown(card_html("最近到期日", f"{opt_data['expiry']}", None, 0, "Next Exp"), unsafe_allow_html=True)
-        with op2: st.markdown(card_html("最大痛点 (Max Pain)", f"${opt_data['max_pain']:.1f}", f"Gap: {mp_delta:+.2f}", mp_delta, tooltip_text="期权卖方亏损最小的价格。"), unsafe_allow_html=True)
+        with op1: st.markdown(card_html("近期合约 (45d)", f"{opt_data['expiry']}", None, 0, "Pooled"), unsafe_allow_html=True)
+        with op2: st.markdown(card_html("最大痛点 (Max Pain)", f"${opt_data['max_pain']:.1f}", f"Gap: {mp_delta:+.2f}", mp_delta, tooltip_text="近期所有期权卖方亏损最小的价格 (加权)。"), unsafe_allow_html=True)
         with op3: 
             sentiment = "Bearish" if opt_data['pcr'] > 0.8 else ("Bullish" if opt_data['pcr'] < 0.5 else "Neutral")
             st.markdown(card_html("P/C Ratio (Vol)", f"{opt_data['pcr']:.2f}", sentiment, -1 if sentiment=="Bearish" else 1), unsafe_allow_html=True)
-        with op4: st.markdown(card_html("期权墙 (OI Wall)", f"${opt_data['call_wall']:.1f}", f"Sup: ${opt_data['put_wall']:.1f}", 0, tooltip_text="最大Call/Put持仓分布。"), unsafe_allow_html=True)
+        with op4: st.markdown(card_html("期权墙 (OI Wall)", f"${opt_data['call_wall']:.1f}", f"Sup: ${opt_data['put_wall']:.1f}", 0, tooltip_text="现价上方最大阻力 & 下方最大支撑。"), unsafe_allow_html=True)
 
         total_vol = opt_data['call_vol'] + opt_data['put_vol']
         call_pct = (opt_data['call_vol'] / total_vol) * 100 if total_vol > 0 else 50
@@ -664,6 +677,9 @@ def show_live_dashboard():
             <div style="width:{call_pct}%; height:100%; background:#2f9e44;"></div>
         </div>
         """, unsafe_allow_html=True)
+    elif live_price > 0:
+         st.markdown("---")
+         st.info("⚠️ 近期 (45天内) 期权数据不足，暂不展示误导信息。请关注正股走势。")
     # --------------------------
 
     st.markdown("---")
@@ -787,7 +803,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.7 Strict | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.8 Real-Time | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.7 Strict")
+st.markdown("### ⚡ BTDR 领航员 v13.8 Real-Time")
 show_live_dashboard()
