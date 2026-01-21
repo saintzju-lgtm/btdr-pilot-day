@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v12.0 Pro", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v12.1 Ultimate", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -223,7 +223,6 @@ def run_grandmaster_analytics():
         "ensemble_mom_h": 0.08, "ensemble_mom_l": -0.08,
         "top_peers": ["MARA", "RIOT", "CLSK", "CORZ", "IREN"]
     }
-    # 初始化增加 macd, boll 字段
     default_factors = {"vwap": 0, "adx": 20, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05, "atr_ratio": 0.05, "hurst": 0.5, "macd": 0, "macd_sig": 0, "boll_u": 0, "boll_l": 0, "boll_m": 0}
 
     try:
@@ -237,7 +236,6 @@ def run_grandmaster_analytics():
         
         if len(btdr) < 30: return default_model, default_factors, "Insufficient Data"
 
-        # Correlation Analysis
         correlations = {}
         for m in MINER_POOL:
             if m in data:
@@ -264,7 +262,7 @@ def run_grandmaster_analytics():
         tr = np.maximum(high - low, np.abs(high - close.shift(1)))
         atr = tr.rolling(14).mean()
         
-        # --- NEW: MACD Calculation ---
+        # MACD
         exp12 = close.ewm(span=12, adjust=False).mean()
         exp26 = close.ewm(span=26, adjust=False).mean()
         macd = exp12 - exp26
@@ -272,14 +270,14 @@ def run_grandmaster_analytics():
         macd_val = macd.iloc[-1]
         macd_sig_val = signal.iloc[-1]
 
-        # --- NEW: Bollinger Bands (20, 2) ---
+        # BOLL
         sma20 = close.rolling(window=20).mean()
         std20 = close.rolling(window=20).std()
         boll_u = sma20 + (std20 * 2)
         boll_l = sma20 - (std20 * 2)
         boll_m = sma20
         
-        # ADX Logic
+        # ADX
         up, down = high.diff(), -low.diff()
         plus_dm = np.where((up > down) & (up > 0), up, 0); minus_dm = np.where((down > up) & (down > 0), down, 0)
         atr_s = pd.Series(atr.values, index=btdr.index)
@@ -288,7 +286,7 @@ def run_grandmaster_analytics():
         dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
         adx = dx.rolling(14).mean().iloc[-1]; adx = 20 if np.isnan(adx) else adx
         
-        # RSI Logic
+        # RSI
         delta_p = close.diff()
         gain = delta_p.where(delta_p > 0, 0).rolling(14).mean(); loss = -delta_p.where(delta_p < 0, 0).rolling(14).mean()
         rs = gain / loss; rsi = 100 - (100 / (1 + rs)).iloc[-1]
@@ -309,7 +307,7 @@ def run_grandmaster_analytics():
             "boll_u": boll_u.iloc[-1], "boll_l": boll_l.iloc[-1], "boll_m": boll_m.iloc[-1]
         }
 
-        # Weighted Least Squares Regression
+        # WLS Regression
         df_reg = pd.DataFrame()
         df_reg['PrevClose'] = btdr['Close'].shift(1); df_reg['Open'] = btdr['Open']
         df_reg['High'] = btdr['High']; df_reg['Low'] = btdr['Low']
@@ -333,7 +331,7 @@ def run_grandmaster_analytics():
             "ensemble_mom_h": df_reg['Target_High'].tail(3).max(), "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": top_peers
         }
-        return final_model, factors, "v12.0 Pro"
+        return final_model, factors, "v12.1 Ultimate"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -349,74 +347,36 @@ def determine_market_state(now_ny):
     return "Overnight", "dot-night"
 
 def get_ai_weights(regime, rsi, volatility_state):
-    """
-    AI 引擎核心：根据市场状态动态分配预测模型的权重
-    Returns: (w_kalman, w_hist, w_mom, w_ai)
-    """
-    if regime == "Trend":
-        return 0.20, 0.05, 0.35, 0.40
-    elif regime == "MeanRev":
-        return 0.35, 0.35, 0.10, 0.20
-    else:
-        return 0.25, 0.15, 0.10, 0.50
+    if regime == "Trend": return 0.20, 0.05, 0.35, 0.40
+    elif regime == "MeanRev": return 0.35, 0.35, 0.10, 0.20
+    else: return 0.25, 0.15, 0.10, 0.50
 
 def get_signal_recommendation(curr_price, factors):
-    """
-    综合 RSI, MACD, BOLL 给出战术建议
-    """
-    score = 0
-    reasons = []
-    
-    # 1. RSI Logic (Weight: 2)
+    score = 0; reasons = []
     rsi = factors['rsi']
-    if rsi < 30: 
-        score += 2; reasons.append("RSI超卖")
-    elif rsi > 70: 
-        score -= 2; reasons.append("RSI超买")
-    elif rsi > 55:
-        score += 0.5 # 偏强
+    if rsi < 30: score += 2; reasons.append("RSI超卖")
+    elif rsi > 70: score -= 2; reasons.append("RSI超买")
+    elif rsi > 55: score += 0.5 
     
-    # 2. Bollinger Logic (Weight: 3)
-    # 使用当前实时价格对比昨日算出的轨道（近似参考，实战中应动态计算，这里做近似）
     bp = (curr_price - factors['boll_l']) / (factors['boll_u'] - factors['boll_l']) if (factors['boll_u'] - factors['boll_l']) != 0 else 0.5
-    if bp < 0: 
-        score += 3; reasons.append("跌破下轨")
-    elif bp > 1: 
-        score -= 3; reasons.append("突破上轨")
-    elif bp < 0.2:
-        score += 1; reasons.append("接近支撑")
-    elif bp > 0.8:
-        score -= 1; reasons.append("接近阻力")
+    if bp < 0: score += 3; reasons.append("跌破下轨")
+    elif bp > 1: score -= 3; reasons.append("突破上轨")
+    elif bp < 0.2: score += 1; reasons.append("接近支撑")
+    elif bp > 0.8: score -= 1; reasons.append("接近阻力")
 
-    # 3. MACD Logic (Weight: 1.5)
     macd_hist = factors['macd'] - factors['macd_sig']
-    if macd_hist > 0 and factors['macd'] > 0:
-        score += 1.5; reasons.append("MACD多头")
-    elif macd_hist < 0 and factors['macd'] < 0:
-        score -= 1.5; reasons.append("MACD空头")
-    elif macd_hist > 0 and factors['macd'] < 0:
-        score += 1; reasons.append("水下金叉趋势")
+    if macd_hist > 0 and factors['macd'] > 0: score += 1.5; reasons.append("MACD多头")
+    elif macd_hist < 0 and factors['macd'] < 0: score -= 1.5; reasons.append("MACD空头")
+    elif macd_hist > 0 and factors['macd'] < 0: score += 1; reasons.append("水下金叉趋势")
     
-    # 4. VWAP Logic (Weight: 1)
     if curr_price > factors['vwap']: score += 1
     else: score -= 1
 
-    # Final Decision
-    action = "HOLD"
-    sub_text = "多空力量均衡，观望为主"
-    
-    if score >= 4.5:
-        action = "STRONG BUY"
-        sub_text = "极度超卖/技术共振，建议积极买入"
-    elif score >= 2:
-        action = "ACCUMULATE"
-        sub_text = "趋势偏多，适合分批建仓"
-    elif score <= -4.5:
-        action = "STRONG SELL"
-        sub_text = "极度超买/风险极高，建议清仓"
-    elif score <= -2:
-        action = "REDUCE"
-        sub_text = "上方阻力较大，建议逢高减仓"
+    action = "HOLD"; sub_text = "多空力量均衡，观望为主"
+    if score >= 4.5: action = "STRONG BUY"; sub_text = "极度超卖/技术共振，建议积极买入"
+    elif score >= 2: action = "ACCUMULATE"; sub_text = "趋势偏多，适合分批建仓"
+    elif score <= -4.5: action = "STRONG SELL"; sub_text = "极度超买/风险极高，建议清仓"
+    elif score <= -2: action = "REDUCE"; sub_text = "上方阻力较大，建议逢高减仓"
         
     return action, " | ".join(reasons[:2]), sub_text, score, macd_hist, bp
 
@@ -424,33 +384,31 @@ def get_realtime_data():
     tickers_list = "BTC-USD BTDR QQQ ^VIX " + " ".join(MINER_POOL)
     symbols = tickers_list.split()
     try:
-        daily = yf.download(tickers_list, period="5d", interval="1d", group_by='ticker', threads=True, progress=False)
+        daily = yf.download(tickers_list, period="6mo", interval="1d", group_by='ticker', threads=True, progress=False)
         live = yf.download(tickers_list, period="2d", interval="1m", prepost=True, group_by='ticker', threads=True, progress=False)
         
         quotes = {}
         tz_ny = pytz.timezone('America/New_York'); now_ny = datetime.now(tz_ny); state_tag, state_css = determine_market_state(now_ny)
         live_volatility = 0.01 
-        
+        btdr_history = pd.DataFrame()
+
         for sym in symbols:
             try:
                 df_day = daily[sym].dropna(subset=['Close']) if sym in daily else pd.DataFrame()
                 df_min = live[sym].dropna(subset=['Close']) if sym in live else pd.DataFrame()
                 
-                current_volume = 0
-                current_price = 0.0
+                if sym == 'BTDR': btdr_history = df_day
+
+                current_volume = 0; current_price = 0.0
                 prev_close = 1.0; open_price = 0.0; is_open_today = False
                 
                 if not df_min.empty: 
                     current_price = df_min['Close'].iloc[-1]
                     if 'Volume' in df_min.columns: current_volume = df_min['Volume'].sum()
-                    
                     if sym == 'BTDR':
-                        # GARCH-Lite: 计算近期分钟级波动率
                         recent_min_std = df_min['Close'].tail(60).pct_change().std()
-                        if np.isnan(recent_min_std) or recent_min_std == 0: 
-                            live_volatility = 0.005 # Fallback
-                        else:
-                            live_volatility = recent_min_std * np.sqrt(60) # Annualize to hourly-ish scale
+                        if np.isnan(recent_min_std) or recent_min_std == 0: live_volatility = 0.005 
+                        else: live_volatility = recent_min_std * np.sqrt(60) 
                         
                 elif not df_day.empty: 
                     current_price = df_day['Close'].iloc[-1]; current_volume = df_day['Volume'].iloc[-1]
@@ -461,8 +419,7 @@ def get_realtime_data():
                         is_open_today = True; open_price = df_day['Open'].iloc[-1]
                         if len(df_day) >= 2: prev_close = df_day['Close'].iloc[-2]
                         else: prev_close = df_day['Open'].iloc[-1]
-                    else: 
-                        prev_close = df_day['Close'].iloc[-1]; open_price = prev_close
+                    else: prev_close = df_day['Close'].iloc[-1]; open_price = prev_close
                 
                 pct = ((current_price - prev_close) / prev_close) * 100 if prev_close > 0 else 0
                 quotes[sym] = {"price": current_price, "pct": pct, "prev": prev_close, "open": open_price, "volume": current_volume, "tag": state_tag, "css": state_css, "is_open_today": is_open_today}
@@ -471,20 +428,47 @@ def get_realtime_data():
         
         try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1.0).json()['data'][0]['value'])
         except: fng = 50
-        return quotes, fng, live_volatility
-    except: return None, 50, 0.01
+        return quotes, fng, live_volatility, btdr_history
+    except: return None, 50, 0.01, pd.DataFrame()
 
-# --- 6. 仪表盘展示 ---
+# --- 6. 绘图函数 ---
+def draw_kline_chart(df):
+    if df.empty: return alt.Chart(pd.DataFrame()).mark_text().encode(text=alt.value("No Data"))
+    
+    # Data Prep
+    df = df.reset_index().rename(columns={"Date": "T"})
+    df = df.tail(60) # Show last 60 days
+    
+    base = alt.Chart(df).encode(x=alt.X('T:T', axis=alt.Axis(format='%m/%d', title=None)))
+    
+    # Candlestick
+    rule = base.mark_rule().encode(y=alt.Y('Low:Q', scale=alt.Scale(zero=False)), y2='High:Q')
+    bar = base.mark_bar(width=8).encode(
+        y='Open:Q', y2='Close:Q',
+        color=alt.condition("datum.Open < datum.Close", alt.value("#0ca678"), alt.value("#e03131"))
+    )
+    
+    # MA Lines
+    line_5 = base.mark_line(color='#228be6', size=1, opacity=0.8).transform_window(rolling_mean='mean(Close)', frame=[-4, 0]).encode(y='rolling_mean:Q')
+    line_20 = base.mark_line(color='#f59f00', size=1, opacity=0.8).transform_window(rolling_mean='mean(Close)', frame=[-19, 0]).encode(y='rolling_mean:Q')
+    
+    # Volume
+    vol = base.mark_bar(opacity=0.3).encode(
+        y=alt.Y('Volume:Q', axis=alt.Axis(title='Volume', labels=False, ticks=False)),
+        color=alt.condition("datum.Open < datum.Close", alt.value("#0ca678"), alt.value("#e03131"))
+    ).properties(height=50)
+    
+    chart = (rule + bar + line_5 + line_20).properties(height=200)
+    return alt.vconcat(chart, vol).resolve_scale(x='shared').interactive()
+
+# --- 7. 仪表盘展示 ---
 @st.fragment(run_every=15)
 def show_live_dashboard():
-    quotes, fng_val, live_vol_btdr = get_realtime_data()
+    quotes, fng_val, live_vol_btdr, btdr_hist = get_realtime_data()
     ai_model, factors, ai_status = run_grandmaster_analytics()
     
     if not quotes: 
-        st.warning("📡 建立安全连接中 (Initializing Secure Link)...")
-        time.sleep(1)
-        st.rerun()
-        return
+        st.warning("📡 建立安全连接中 (Initializing Secure Link)..."); time.sleep(1); st.rerun(); return
 
     btc = quotes.get('BTC-USD', {'pct': 0, 'price': 0}); qqq = quotes.get('QQQ', {'pct': 0})
     vix = quotes.get('^VIX', {'price': 20, 'pct': 0}); btdr = quotes.get('BTDR', {'price': 0})
@@ -495,24 +479,16 @@ def show_live_dashboard():
     
     tz_ny = pytz.timezone('America/New_York'); now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
     regime_tag = factors['regime']; badge_class = "badge-ai"
-    
-    # 动态获取 AI 权重
     w_kalman, w_hist, w_mom, w_ai = get_ai_weights(regime_tag, factors['rsi'], vix['price'])
-    
-    # 获取交易建议
     act, reason, sub, score, macd_h, boll_pos = get_signal_recommendation(btdr['price'], factors)
     
     st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; AI 模式: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: <b>{ai_status}</b></div>", unsafe_allow_html=True)
-    
-    # --- Action Banner ---
     st.markdown(action_banner_html(act, reason, sub), unsafe_allow_html=True)
     
     c1, c2 = st.columns(2)
     with c1: st.markdown(card_html("BTC (USD)", f"${btc['price']:,.0f}", f"{btc['pct']:+.2f}%", btc['pct']), unsafe_allow_html=True)
-    
     fng_tooltip = "0-24: 极度恐慌 (潜在买点)\n25-49: 恐慌\n50-74: 贪婪\n75-100: 极度贪婪 (风险较高)"
     with c2: st.markdown(card_html("恐慌指数 (F&G)", f"{fng_val}", None, 0, tooltip_text=fng_tooltip), unsafe_allow_html=True)
-    
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
     
     st.caption("⚒️ 矿股板块 Beta (Correlation Top 5)")
@@ -526,6 +502,14 @@ def show_live_dashboard():
             
     st.markdown("---")
     
+    # --- 新增：K线图区域 ---
+    st.markdown("### 📈 BTDR K-Line (Daily)")
+    if not btdr_hist.empty:
+        chart_k = draw_kline_chart(btdr_hist)
+        st.altair_chart(chart_k, use_container_width=True)
+    else:
+        st.info("Market data initializing for chart...")
+        
     c3, c4, c5 = st.columns(3)
     status_tag = f"<span class='status-dot {btdr['css']}'></span> <span style='font-size:0.6rem; color:#999'>{btdr['tag']}</span>"
     with c3: st.markdown(card_html("BTDR 现价", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
@@ -542,7 +526,6 @@ def show_live_dashboard():
     pred_h_kalman = mh['intercept'] + (mh['beta_gap'] * current_gap_pct) + (mh['beta_btc'] * btc_pct_factor) + (mh['beta_vol'] * vol_state_factor)
     pred_l_kalman = ml['intercept'] + (ml['beta_gap'] * current_gap_pct) + (ml['beta_btc'] * btc_pct_factor) + (ml['beta_vol'] * vol_state_factor)
     
-    # AI 波动率修正 (考虑 VIX Skew)
     vix_factor = max(1.0, vix['price'] / 20.0)
     live_vol_pct = (live_vol_btdr / btdr['price']) * vix_factor if btdr['price'] > 0 else 0.02
     
@@ -555,29 +538,20 @@ def show_live_dashboard():
     sentiment_adj = (fng_val - 50) * 0.0005; final_h_ret += sentiment_adj; final_l_ret += sentiment_adj
     p_high = btdr['prev'] * (1 + final_h_ret); p_low = btdr['prev'] * (1 + final_l_ret)
 
-    curr_p = btdr['price']
-    atr_buffer = live_vol_btdr * 0.6  # 稍微收紧 Buffer 以提高成交率
-    
-    buy_entry = p_low + atr_buffer
-    buy_stop = buy_entry - (live_vol_btdr * 2.5)
-    buy_target = p_high - atr_buffer
+    curr_p = btdr['price']; atr_buffer = live_vol_btdr * 0.6
+    buy_entry = p_low + atr_buffer; buy_stop = buy_entry - (live_vol_btdr * 2.5); buy_target = p_high - atr_buffer
     buy_rr = (buy_target - buy_entry) / (buy_entry - buy_stop) if (buy_entry - buy_stop) > 0 else 0
-    
     z_buy = (curr_p - buy_entry) / (live_vol_btdr * 8)
     buy_prob = max(min((1 - norm.cdf(z_buy)) * 100 * 2, 95), 5)
     buy_prob_class = "prob-high" if buy_prob > 60 else ("prob-med" if buy_prob > 30 else "prob-low")
 
-    sell_entry = p_high - atr_buffer
-    sell_stop = sell_entry + (live_vol_btdr * 2.5)
-    sell_target = p_low + atr_buffer
+    sell_entry = p_high - atr_buffer; sell_stop = sell_entry + (live_vol_btdr * 2.5); sell_target = p_low + atr_buffer
     sell_rr = (sell_entry - sell_target) / (sell_stop - sell_entry) if (sell_stop - sell_entry) > 0 else 0
-    
     z_sell = (sell_entry - curr_p) / (live_vol_btdr * 8)
     sell_prob = max(min((1 - norm.cdf(z_sell)) * 100 * 2, 95), 5)
     sell_prob_class = "prob-high" if sell_prob > 60 else ("prob-med" if sell_prob > 30 else "prob-low")
 
     tick1, tick2 = st.columns(2)
-    
     with tick1:
         st.markdown(f"""
         <div class="ticket-card ticket-buy">
@@ -585,14 +559,9 @@ def show_live_dashboard():
             <div class="ticket-price-row"><span class="ticket-price-label">挂单价</span><span class="ticket-price-val">${buy_entry:.2f}</span></div>
             <div class="ticket-price-row"><span class="ticket-price-label">止损价</span><span class="ticket-price-val" style="color:#e03131; font-size:1.1rem;">${buy_stop:.2f}</span></div>
             <div class="ticket-price-row"><span class="ticket-price-label">目标价</span><span class="ticket-price-val" style="color:#1c7ed6; font-size:1.1rem;">${buy_target:.2f}</span></div>
-            <div class="ticket-meta">
-                <span>R/R: <b>1:{buy_rr:.1f}</b></span>
-                <span>概率: <b>{buy_prob:.0f}%</b></span>
-            </div>
+            <div class="ticket-meta"><span>R/R: <b>1:{buy_rr:.1f}</b></span><span>概率: <b>{buy_prob:.0f}%</b></span></div>
             <div class="prob-container"><div class="prob-fill {buy_prob_class}" style="width:{buy_prob}%"></div></div>
-        </div>
-        """, unsafe_allow_html=True)
-        
+        </div>""", unsafe_allow_html=True)
     with tick2:
         st.markdown(f"""
         <div class="ticket-card ticket-sell">
@@ -600,30 +569,17 @@ def show_live_dashboard():
             <div class="ticket-price-row"><span class="ticket-price-label">挂单价</span><span class="ticket-price-val">${sell_entry:.2f}</span></div>
             <div class="ticket-price-row"><span class="ticket-price-label">止损价</span><span class="ticket-price-val" style="color:#e03131; font-size:1.1rem;">${sell_stop:.2f}</span></div>
             <div class="ticket-price-row"><span class="ticket-price-label">目标价</span><span class="ticket-price-val" style="color:#1c7ed6; font-size:1.1rem;">${sell_target:.2f}</span></div>
-            <div class="ticket-meta">
-                <span>R/R: <b>1:{sell_rr:.1f}</b></span>
-                <span>概率: <b>{sell_prob:.0f}%</b></span>
-            </div>
+            <div class="ticket-meta"><span>R/R: <b>1:{sell_rr:.1f}</b></span><span>概率: <b>{sell_prob:.0f}%</b></span></div>
             <div class="prob-container"><div class="prob-fill {sell_prob_class}" style="width:{sell_prob}%"></div></div>
-        </div>
-        """, unsafe_allow_html=True)
+        </div>""", unsafe_allow_html=True)
 
-    # 动态权重条
     st.markdown(f"""
     <div style="font-size:0.7rem; color:#888; margin-bottom:2px; display:flex; justify-content:space-between;">
-        <span>🟦 Kalman ({w_kalman:.0%})</span>
-        <span>🟨 History ({w_hist:.0%})</span>
-        <span>🟥 Momentum ({w_mom:.0%})</span>
-        <span>🟪 AI Volatility ({w_ai:.0%})</span>
+        <span>🟦 Kalman ({w_kalman:.0%})</span><span>🟨 History ({w_hist:.0%})</span><span>🟥 Momentum ({w_mom:.0%})</span><span>🟪 AI Volatility ({w_ai:.0%})</span>
     </div>
     <div class="ensemble-bar">
-        <div class="bar-kalman" style="width: {w_kalman*100}%"></div>
-        <div class="bar-hist" style="width: {w_hist*100}%"></div>
-        <div class="bar-mom" style="width: {w_mom*100}%"></div>
-        <div class="bar-ai" style="width: {w_ai*100}%"></div>
-    </div>
-    <div style="margin-bottom:10px;"></div>
-    """, unsafe_allow_html=True)
+        <div class="bar-kalman" style="width: {w_kalman*100}%"></div><div class="bar-hist" style="width: {w_hist*100}%"></div><div class="bar-mom" style="width: {w_mom*100}%"></div><div class="bar-ai" style="width: {w_ai*100}%"></div>
+    </div><div style="margin-bottom:10px;"></div>""", unsafe_allow_html=True)
     
     col_h, col_l = st.columns(2)
     h_bg = "#e6fcf5" if btdr['price'] < p_high else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < p_high else "#ffffff"
@@ -633,19 +589,11 @@ def show_live_dashboard():
 
     st.markdown("---")
     st.markdown("### 🔬 核心指标矩阵 (Technical Matrix)")
-    
-    # 构造显示的指标状态
     rsi_val = factors['rsi']; rsi_status = "O/B (>70)" if rsi_val > 70 else ("O/S (<30)" if rsi_val < 30 else "Neutral")
-    
-    # MACD Status
-    macd_val = factors['macd']; macd_sig = factors['macd_sig']
-    macd_delta = macd_val - macd_sig
+    macd_val = factors['macd']; macd_sig = factors['macd_sig']; macd_delta = macd_val - macd_sig
     macd_txt = "Bull Cross" if macd_delta > 0 else "Bear Cross"
-    
-    # BOLL Status
     boll_pct = (btdr['price'] - factors['boll_l']) / (factors['boll_u'] - factors['boll_l'])
     boll_txt = "Low Band" if boll_pct < 0.2 else ("High Band" if boll_pct > 0.8 else "Mid Band")
-    
     mi1, mi2, mi3, mi4 = st.columns(4)
     with mi1: st.markdown(factor_html("RSI (14d)", f"{rsi_val:.0f}", rsi_status, 0 if 30<rsi_val<70 else (-1 if rsi_val>70 else 1), "强弱指标，>70超买，<30超卖。"), unsafe_allow_html=True)
     with mi2: st.markdown(factor_html("MACD (Trend)", f"{macd_delta:.3f}", macd_txt, 1 if macd_delta>0 else -1, "Diff与Signal之差，正数为多头趋势。"), unsafe_allow_html=True)
@@ -654,21 +602,20 @@ def show_live_dashboard():
     
     st.markdown("### ☁️ 概率推演 (AI Probability)")
     
-    # 概率密度图 (Bell Curve for Target)
+    # Chart 1: Probability Density
     x_axis = np.linspace(p_low * 0.95, p_high * 1.05, 100)
     pdf_high = norm.pdf(x_axis, p_high, live_vol_btdr * btdr['price'])
     pdf_low = norm.pdf(x_axis, p_low, live_vol_btdr * btdr['price'])
-    
-    pdf_data = pd.DataFrame({'Price': x_axis, 'Resistance Probability': pdf_high, 'Support Probability': pdf_low})
-    pdf_data = pdf_data.melt('Price', var_name='Type', value_name='Density')
+    pdf_data = pd.DataFrame({'Price': x_axis, 'Resistance Probability': pdf_high, 'Support Probability': pdf_low}).melt('Price', var_name='Type', value_name='Density')
     
     chart_pdf = alt.Chart(pdf_data).mark_area(opacity=0.3).encode(
         x=alt.X('Price', title='Price Levels', scale=alt.Scale(zero=False)),
         y='Density',
         color=alt.Color('Type', scale=alt.Scale(domain=['Resistance Probability', 'Support Probability'], range=['#d6336c', '#0ca678']))
-    ).properties(height=180)
+    ).properties(height=220)
+    st.altair_chart(chart_pdf, use_container_width=True)
     
-    # Monte Carlo (Keep existing)
+    # Chart 2: Monte Carlo - Fix: Separate chart to ensure width
     current_vol = factors['vol_base']; long_term_vol = 0.05; drift = drift_est
     sims, days, dt = 1500, 5, 1
     price_paths = np.zeros((sims, days + 1)); price_paths[:, 0] = btdr['price']
@@ -681,14 +628,15 @@ def show_live_dashboard():
         
     percentiles = np.percentile(price_paths, [10, 50, 90], axis=0)
     chart_data = pd.DataFrame({"Day": np.arange(days+1), "P90": np.round(percentiles[2], 2), "P50": np.round(percentiles[1], 2), "P10": np.round(percentiles[0], 2)})
-    base = alt.Chart(chart_data).encode(x=alt.X('Day:O', title='未来交易日 (T+)'))
-    area = base.mark_area(opacity=0.1, color='#4dabf7').encode(y=alt.Y('P10', title='价格预演 (USD)', scale=alt.Scale(zero=False)), y2='P90')
+    
+    base = alt.Chart(chart_data).encode(x=alt.X('Day:Q', title='Future Trading Days (T+)'))
+    area = base.mark_area(opacity=0.1, color='#4dabf7').encode(y=alt.Y('P10', title='Forecast Price (USD)', scale=alt.Scale(zero=False)), y2='P90')
     l90 = base.mark_line(color='#0ca678', strokeDash=[5,5]).encode(y='P90')
     l50 = base.mark_line(color='#228be6', size=3).encode(y='P50')
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
-    st.altair_chart((chart_pdf & (area + l90 + l50 + l10).properties(height=200)).resolve_scale(x='independent'), use_container_width=True)
-    st.caption(f"AI Engine: v12.0 Pro | Score: {score:.1f} | Signal: {act}")
+    st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
+    st.caption(f"AI Engine: v12.1 Ultimate | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v12.0 Pro")
+st.markdown("### ⚡ BTDR 领航员 v12.1 Ultimate")
 show_live_dashboard()
