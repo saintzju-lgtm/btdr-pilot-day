@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.10 Intent", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.11 Complete", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -162,6 +162,14 @@ CUSTOM_CSS = """
     .tag-bull { color: #099268; background: #e6fcf5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
     .tag-bear { color: #c92a2a; background: #fff5f5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
     .tag-neu { color: #666; background: #f1f3f5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
+    
+    /* Expander Style */
+    .streamlit-expanderHeader {
+        font-size: 0.8rem !important;
+        color: #555 !important;
+        background-color: #f8f9fa !important;
+        border-radius: 6px !important;
+    }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -247,6 +255,7 @@ def get_options_data(symbol, current_price):
         puts_list = []
         valid_dates = []
         
+        # 1. Aggregation (聚合): 抓取未来45天内所有合约
         for d in sorted_dates:
             d_obj = datetime.strptime(d, '%Y-%m-%d')
             if d_obj < today: continue
@@ -262,6 +271,7 @@ def get_options_data(symbol, current_price):
         all_calls = pd.concat(calls_list)
         all_puts = pd.concat(puts_list)
         
+        # 2. 价格区间清洗 (±30%)
         lower_bound = current_price * 0.7
         upper_bound = current_price * 1.3
         
@@ -271,10 +281,12 @@ def get_options_data(symbol, current_price):
         if c_clean.empty: c_clean = all_calls
         if p_clean.empty: p_clean = all_puts
         
+        # 3. PCR
         total_call_vol = all_calls['volume'].sum() if not all_calls.empty else 1
         total_put_vol = all_puts['volume'].sum() if not all_puts.empty else 0
         pcr_vol = total_put_vol / total_call_vol
         
+        # 4. Max Pain
         strikes = set(c_clean['strike']).union(set(p_clean['strike']))
         min_loss = float('inf'); max_pain = current_price
         
@@ -286,6 +298,7 @@ def get_options_data(symbol, current_price):
                 if total_loss < min_loss: 
                     min_loss = total_loss; max_pain = k
         
+        # 5. Effective Walls
         calls_above = c_clean[c_clean['strike'] > current_price]
         if not calls_above.empty:
             call_oi_map = calls_above.groupby('strike')['openInterest'].sum()
@@ -313,7 +326,7 @@ def get_options_data(symbol, current_price):
 def get_mm_intent(price, mp, cw, pw, pcr):
     gap_mp = (price - mp) / price
     
-    # 1. 判断是否触墙 (Wall Logic has priority)
+    # 1. Wall Priority
     if price >= cw * 0.98:
         title = "♟️ 庄家意图: 铁壁防守 (Defend Call Wall)"
         desc = f"股价逼近最大阻力位 ${cw}，做市商Gamma风险剧增。预计将出现强抛压以防守此位置，除非成交量剧增引发Gamma Squeeze。"
@@ -326,16 +339,16 @@ def get_mm_intent(price, mp, cw, pw, pcr):
         color = "tag-bull"
         return title, desc, color
 
-    # 2. 判断 Max Pain 引力 (Gravity Logic)
-    if gap_mp > 0.15: # Price >> MP
+    # 2. Gravity Priority
+    if gap_mp > 0.15: 
         title = "♟️ 庄家意图: 诱多杀跌 (Suppress to Pain)"
         desc = f"现价(${price:.2f}) 远高于痛点(${mp:.1f})。做市商卖出的Call处于亏损边缘，有强烈动力打压股价，收割多头权利金。"
         color = "tag-bear"
-    elif gap_mp < -0.15: # Price << MP
+    elif gap_mp < -0.15: 
         title = "♟️ 庄家意图: 诱空拉升 (Lift to Pain)"
         desc = f"现价(${price:.2f}) 远低于痛点(${mp:.1f})。做市商卖出的Put处于亏损边缘，有动力拉升股价，收割空头权利金。"
         color = "tag-bull"
-    else: # Price ~= MP
+    else: 
         title = "♟️ 庄家意图: 横盘收租 (Theta Burn)"
         desc = f"现价处于痛点(${mp:.1f}) 舒适区。做市商只需维持震荡，利用时间损耗 (Theta) 同时收割多空双方。"
         color = "tag-neu"
@@ -466,7 +479,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.10 Intent"
+        return final_model, factors, "v13.11 Complete"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -677,7 +690,7 @@ def show_live_dashboard():
         turnover_rate = (data['volume'] / (shares_m * 1000000)) * 100
         cols[i].markdown(miner_card_html(p, data['price'], data['pct'], turnover_rate), unsafe_allow_html=True)
     
-    # --- OPTIONS RADAR & INTENT ENGINE ---
+    # --- OPTIONS RADAR + INTENT + EXPANDER ---
     if opt_data:
         st.markdown("---")
         st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>📡 期权雷达 (Real-Time Aggregate)</div>", unsafe_allow_html=True)
@@ -704,16 +717,30 @@ def show_live_dashboard():
         </div>
         """, unsafe_allow_html=True)
 
-        # --- INTENT ENGINE BOX ---
+        # 1. 意图 Box
         i_title, i_desc, i_color = get_mm_intent(btdr['price'], opt_data['max_pain'], opt_data['call_wall'], opt_data['put_wall'], opt_data['pcr'])
         st.markdown(f"""
         <div class="intent-box">
-            <div class="intent-title">{i_title}</div>
+            <div class="intent-title"><span class="{i_color}">AI Insight</span> {i_title}</div>
             <div class="intent-desc">{i_desc}</div>
         </div>
-        <div style="margin-bottom:15px;"></div>
+        <div style="margin-bottom:8px;"></div>
         """, unsafe_allow_html=True)
-        # -------------------------
+
+        # 2. 详细解读 Expander
+        with st.expander("💡 它是如何工作的？(实战解读指南)"):
+            st.markdown(f"""
+            <div style='font-size: 0.85rem; color: #444; line-height: 1.6;'>
+                <b>1. 数据来源 (Data Source):</b><br>
+                系统聚合了未来 <b>45天内</b> 所有有效到期日的期权持仓。这解决了单一周权流动性不足的问题，展示的是主力资金的<b>总体兵力部署</b>。<br><br>
+                <b>2. 关键指标 (Key Metrics):</b><br>
+                • <b>期权墙 (OI Wall - ${opt_data['call_wall']}):</b> 当前最强的<b>阻力位</b>。大量看涨期权堆积在此，做市商为了对冲风险，往往会在股价接近此位置时抛售现货，形成“铁板”。<br>
+                • <b>最大痛点 (Max Pain - ${opt_data['max_pain']}):</b> 当前潜在的<b>引力位</b>。机构最希望结算的价格。若现价远高于痛点，股价会有向下的“地心引力”。<br><br>
+                <b>3. 操盘剧本 (Action Plan):</b><br>
+                • <b>冲高策略:</b> 若股价上攻至 <b>${opt_data['call_wall']}</b> 附近，抛压极大，建议<b>减仓或止盈</b> (除非放量突破)。<br>
+                • <b>回调策略:</b> 若股价回调，下方第一支撑看 <b>${opt_data['max_pain']}</b> 附近，是相对安全的低吸区。
+            </div>
+            """, unsafe_allow_html=True)
 
     elif live_price > 0:
          st.markdown("---")
@@ -841,7 +868,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.10 Intent | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.11 Complete | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.10 Intent")
+st.markdown("### ⚡ BTDR 领航员 v13.11 Complete")
 show_live_dashboard()
