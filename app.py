@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.13 Macro", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.14 Perfected", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -19,8 +19,10 @@ CUSTOM_CSS = """
     .stApp { margin-top: -30px; background-color: #ffffff; }
     div[data-testid="stStatusWidget"] { visibility: hidden; }
     
-    h1, h2, h3, div, p, span { 
-        color: #212529 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; 
+    /* --- FIX: 移除全局样式，仅对自定义卡片应用字体，解决图标乱码问题 --- */
+    .metric-card, .miner-card, .factor-box, .action-banner, .intent-box, .scen-card, .time-bar, .chart-legend {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+        color: #212529;
     }
     
     div[data-testid="stAltairChart"] {
@@ -162,15 +164,7 @@ CUSTOM_CSS = """
     .tag-bull { color: #099268; background: #e6fcf5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
     .tag-bear { color: #c92a2a; background: #fff5f5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
     .tag-neu { color: #666; background: #f1f3f5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
-    
-    /* Expander Style */
-    .streamlit-expanderHeader {
-        font-size: 0.8rem !important;
-        color: #555 !important;
-        background-color: #f8f9fa !important;
-        border-radius: 6px !important;
-        border: 1px solid #eee !important;
-    }
+    .tag-macro { color: #f76707; background: #fff4e6; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -256,6 +250,7 @@ def get_options_data(symbol, current_price):
         puts_list = []
         valid_dates = []
         
+        # Aggregation
         for d in sorted_dates:
             d_obj = datetime.strptime(d, '%Y-%m-%d')
             if d_obj < today: continue
@@ -271,6 +266,7 @@ def get_options_data(symbol, current_price):
         all_calls = pd.concat(calls_list)
         all_puts = pd.concat(puts_list)
         
+        # Cleaning
         lower_bound = current_price * 0.7
         upper_bound = current_price * 1.3
         
@@ -280,10 +276,12 @@ def get_options_data(symbol, current_price):
         if c_clean.empty: c_clean = all_calls
         if p_clean.empty: p_clean = all_puts
         
+        # PCR
         total_call_vol = all_calls['volume'].sum() if not all_calls.empty else 1
         total_put_vol = all_puts['volume'].sum() if not all_puts.empty else 0
         pcr_vol = total_put_vol / total_call_vol
         
+        # Max Pain
         strikes = set(c_clean['strike']).union(set(p_clean['strike']))
         min_loss = float('inf'); max_pain = current_price
         
@@ -295,6 +293,7 @@ def get_options_data(symbol, current_price):
                 if total_loss < min_loss: 
                     min_loss = total_loss; max_pain = k
         
+        # Walls
         calls_above = c_clean[c_clean['strike'] > current_price]
         if not calls_above.empty:
             call_oi_map = calls_above.groupby('strike')['openInterest'].sum()
@@ -318,38 +317,53 @@ def get_options_data(symbol, current_price):
         print(f"Options Error: {e}")
         return None
 
-# --- NEW: Miner Macro Data ---
-@st.cache_data(ttl=3600) # Cache for 1 hour as difficulty changes slowly
+# --- NEW: Miner Macro Data & Insight ---
+@st.cache_data(ttl=3600)
 def get_mining_metrics(btc_price):
     try:
-        # Fetch Difficulty from a public API (Blockchain.info)
         diff_url = "https://blockchain.info/q/getdifficulty"
         diff_resp = requests.get(diff_url, timeout=3)
         if diff_resp.status_code == 200:
             difficulty = float(diff_resp.text)
         else:
-            difficulty = 80000000000000 # Fallback constant (approx)
+            difficulty = 80000000000000 
             
-        # Calculate Implied Hashprice (Proxy)
-        # Formula: Rev ($/PH/s/Day) approx = BTC_Price * (BlockReward+Fees) * 144 / (Difficulty * 2^32 / 10^15)
-        # Simplified: using fixed reward 3.125 + 0.1 fees
-        hashprice_est = (btc_price * 3.225 * 144) / (difficulty * 4294967296 / 1e15) 
-        # Note: The factor 2^32 is for H/s. PH/s requires adjustment. 
-        # Correct simplified proportionality for quick display:
-        # We just want a trendable number. Let's use a standard constant to align with Luxor index approx.
-        # Current Hashprice is roughly $45. 
-        # Let's derive it:
-        # 1 PH/s = 1e15 H/s.
-        # Exp hashes per day = 1e15 * 86400
-        # Win prob = Exp hashes / (Difficulty * 2^32)
-        # BTC earned = Win prob * 3.125 (ignore fees for stability)
-        # Revenue = BTC earned * BTC Price
-        btc_per_ph_day = (1e15 * 86400) / (difficulty * 4294967296) * 3.125
+        # Simplified Hashprice Estimation (Proxy for $/PH/Day)
+        # Based on current network constants (Block reward 3.125)
+        # 1 PH/s revenue in BTC = (1e15 * 86400 * 3.125) / (Difficulty * 2^32)
+        btc_per_ph_day = (1e15 * 86400 * 3.125) / (difficulty * 4294967296)
         hashprice_real = btc_per_ph_day * btc_price
         
         return difficulty, hashprice_real
     except:
         return 0, 0
+
+def get_macro_insight(hashprice, beta):
+    # Hashprice Logic
+    if hashprice < 40:
+        hp_tag = "🥶 极寒 (Survival)"
+        hp_desc = "矿工收入极低，仅顶级算力盈利。"
+    elif hashprice > 55:
+        hp_tag = "🤑 暴利 (Money Printer)"
+        hp_desc = "矿工印钞模式，基本面强力支撑。"
+    else:
+        hp_tag = "😐 平衡 (Balanced)"
+        hp_desc = "收入处于平均水平。"
+
+    # Beta Logic
+    if beta > 1.5:
+        beta_tag = "🎰 强杠杆"
+        beta_desc = "股价弹性极高，适合博弈BTC突破。"
+    elif beta < 0.8:
+        beta_tag = "🐢 弱势跟随"
+        beta_desc = "相对BTC滞涨，需警惕动能衰竭。"
+    else:
+        beta_tag = "🔗 正常跟随"
+        beta_desc = "与BTC走势同步。"
+
+    title = f"{hp_tag} | {beta_tag}"
+    desc = f"当前 Hashprice ${hashprice:.1f}/PH/Day ({hp_desc})。BTDR Beta {beta:.2f} ({beta_desc})。"
+    return title, desc
 
 # --- Intent Engine ---
 def get_mm_intent(price, mp, cw, pw, pcr):
@@ -506,7 +520,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.13 Macro"
+        return final_model, factors, "v13.14 Perfected"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -675,7 +689,7 @@ def show_live_dashboard():
     # 获取数据
     opt_data = get_options_data('BTDR', live_price)
     
-    # 获取宏观数据 (New)
+    # 获取宏观数据
     btc_p = quotes.get('BTC-USD', {}).get('price', 90000)
     net_diff, hashprice = get_mining_metrics(btc_p)
     
@@ -721,7 +735,7 @@ def show_live_dashboard():
         turnover_rate = (data['volume'] / (shares_m * 1000000)) * 100
         cols[i].markdown(miner_card_html(p, data['price'], data['pct'], turnover_rate), unsafe_allow_html=True)
         
-    # --- NEW: Miner Macro Section ---
+    # --- Miner Macro ---
     st.markdown("---")
     st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>⛏️ 矿业宏观 (Miner Macro)</div>", unsafe_allow_html=True)
     m1, m2, m3 = st.columns(3)
@@ -729,12 +743,21 @@ def show_live_dashboard():
     diff_str = f"{net_diff/1e12:.1f} T"
     hash_str = f"${hashprice:.2f}"
     beta_val = factors['beta_btc']
-    beta_color = "color-up" if beta_val > 1.2 else ("color-down" if beta_val < 0.8 else "color-neutral")
     
     with m1: st.markdown(card_html("全网难度 (Difficulty)", diff_str, None, 0, "Network"), unsafe_allow_html=True)
     with m2: st.markdown(card_html("挖矿收益 (Hashprice)", hash_str, "PH/Day", 1, "Est"), unsafe_allow_html=True)
     with m3: st.markdown(card_html("Beta vs BTC", f"{beta_val:.2f}", "High Beta" if beta_val>1.5 else "Low Beta", 1 if beta_val>1 else -1, "30d Kalman"), unsafe_allow_html=True)
-    # --------------------------------
+    
+    # NEW: Macro Insight Box
+    macro_t, macro_d = get_macro_insight(hashprice, beta_val)
+    st.markdown(f"""
+    <div class="intent-box" style="border-left-color: #f76707;">
+        <div class="intent-title"><span class="tag-macro">Macro View</span> {macro_t}</div>
+        <div class="intent-desc">{macro_d}</div>
+    </div>
+    <div style="margin-bottom:15px;"></div>
+    """, unsafe_allow_html=True)
+    # -------------------
     
     # --- OPTIONS RADAR + INTENT + EXPANDER ---
     if opt_data:
@@ -767,7 +790,7 @@ def show_live_dashboard():
         i_title, i_desc, i_color = get_mm_intent(btdr['price'], opt_data['max_pain'], opt_data['call_wall'], opt_data['put_wall'], opt_data['pcr'])
         st.markdown(f"""
         <div class="intent-box">
-            <div class="intent-title"><span class="{i_color}">AI Insight</span> {i_title}</div>
+            <div class="intent-title"><span class="{i_color}">Smart Money</span> {i_title}</div>
             <div class="intent-desc">{i_desc}</div>
         </div>
         <div style="margin-bottom:8px;"></div>
@@ -914,7 +937,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.13 Macro | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.14 Perfected | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.13 Macro")
+st.markdown("### ⚡ BTDR 领航员 v13.14 Perfected")
 show_live_dashboard()
