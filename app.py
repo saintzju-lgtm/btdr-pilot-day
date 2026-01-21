@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.12 Fix", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.13 Macro", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -19,10 +19,8 @@ CUSTOM_CSS = """
     .stApp { margin-top: -30px; background-color: #ffffff; }
     div[data-testid="stStatusWidget"] { visibility: hidden; }
     
-    /* --- FIX: 移除全局强制样式，修复图标字体显示错误 --- */
-    .stApp {
-        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        color: #212529;
+    h1, h2, h3, div, p, span { 
+        color: #212529 !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important; 
     }
     
     div[data-testid="stAltairChart"] {
@@ -165,7 +163,7 @@ CUSTOM_CSS = """
     .tag-bear { color: #c92a2a; background: #fff5f5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
     .tag-neu { color: #666; background: #f1f3f5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
     
-    /* Expander Style Fixed */
+    /* Expander Style */
     .streamlit-expanderHeader {
         font-size: 0.8rem !important;
         color: #555 !important;
@@ -258,7 +256,6 @@ def get_options_data(symbol, current_price):
         puts_list = []
         valid_dates = []
         
-        # 1. Aggregation (聚合): 抓取未来45天内所有合约
         for d in sorted_dates:
             d_obj = datetime.strptime(d, '%Y-%m-%d')
             if d_obj < today: continue
@@ -274,7 +271,6 @@ def get_options_data(symbol, current_price):
         all_calls = pd.concat(calls_list)
         all_puts = pd.concat(puts_list)
         
-        # 2. 价格区间清洗 (±30%)
         lower_bound = current_price * 0.7
         upper_bound = current_price * 1.3
         
@@ -284,12 +280,10 @@ def get_options_data(symbol, current_price):
         if c_clean.empty: c_clean = all_calls
         if p_clean.empty: p_clean = all_puts
         
-        # 3. PCR
         total_call_vol = all_calls['volume'].sum() if not all_calls.empty else 1
         total_put_vol = all_puts['volume'].sum() if not all_puts.empty else 0
         pcr_vol = total_put_vol / total_call_vol
         
-        # 4. Max Pain
         strikes = set(c_clean['strike']).union(set(p_clean['strike']))
         min_loss = float('inf'); max_pain = current_price
         
@@ -301,7 +295,6 @@ def get_options_data(symbol, current_price):
                 if total_loss < min_loss: 
                     min_loss = total_loss; max_pain = k
         
-        # 5. Effective Walls
         calls_above = c_clean[c_clean['strike'] > current_price]
         if not calls_above.empty:
             call_oi_map = calls_above.groupby('strike')['openInterest'].sum()
@@ -325,11 +318,43 @@ def get_options_data(symbol, current_price):
         print(f"Options Error: {e}")
         return None
 
-# --- NEW: 庄家意图生成引擎 ---
+# --- NEW: Miner Macro Data ---
+@st.cache_data(ttl=3600) # Cache for 1 hour as difficulty changes slowly
+def get_mining_metrics(btc_price):
+    try:
+        # Fetch Difficulty from a public API (Blockchain.info)
+        diff_url = "https://blockchain.info/q/getdifficulty"
+        diff_resp = requests.get(diff_url, timeout=3)
+        if diff_resp.status_code == 200:
+            difficulty = float(diff_resp.text)
+        else:
+            difficulty = 80000000000000 # Fallback constant (approx)
+            
+        # Calculate Implied Hashprice (Proxy)
+        # Formula: Rev ($/PH/s/Day) approx = BTC_Price * (BlockReward+Fees) * 144 / (Difficulty * 2^32 / 10^15)
+        # Simplified: using fixed reward 3.125 + 0.1 fees
+        hashprice_est = (btc_price * 3.225 * 144) / (difficulty * 4294967296 / 1e15) 
+        # Note: The factor 2^32 is for H/s. PH/s requires adjustment. 
+        # Correct simplified proportionality for quick display:
+        # We just want a trendable number. Let's use a standard constant to align with Luxor index approx.
+        # Current Hashprice is roughly $45. 
+        # Let's derive it:
+        # 1 PH/s = 1e15 H/s.
+        # Exp hashes per day = 1e15 * 86400
+        # Win prob = Exp hashes / (Difficulty * 2^32)
+        # BTC earned = Win prob * 3.125 (ignore fees for stability)
+        # Revenue = BTC earned * BTC Price
+        btc_per_ph_day = (1e15 * 86400) / (difficulty * 4294967296) * 3.125
+        hashprice_real = btc_per_ph_day * btc_price
+        
+        return difficulty, hashprice_real
+    except:
+        return 0, 0
+
+# --- Intent Engine ---
 def get_mm_intent(price, mp, cw, pw, pcr):
     gap_mp = (price - mp) / price
     
-    # 1. Wall Priority
     if price >= cw * 0.98:
         title = "♟️ 庄家意图: 铁壁防守 (Defend Call Wall)"
         desc = f"股价逼近最大阻力位 ${cw}，做市商Gamma风险剧增。预计将出现强抛压以防守此位置，除非成交量剧增引发Gamma Squeeze。"
@@ -342,7 +367,6 @@ def get_mm_intent(price, mp, cw, pw, pcr):
         color = "tag-bull"
         return title, desc, color
 
-    # 2. Gravity Priority
     if gap_mp > 0.15: 
         title = "♟️ 庄家意图: 诱多杀跌 (Suppress to Pain)"
         desc = f"现价(${price:.2f}) 远高于痛点(${mp:.1f})。做市商卖出的Call处于亏损边缘，有强烈动力打压股价，收割多头权利金。"
@@ -482,7 +506,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.12 Fix"
+        return final_model, factors, "v13.13 Macro"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -648,8 +672,12 @@ def show_live_dashboard():
 
     ai_model, factors, ai_status = run_grandmaster_analytics(live_price)
     
-    # 异步获取期权数据
+    # 获取数据
     opt_data = get_options_data('BTDR', live_price)
+    
+    # 获取宏观数据 (New)
+    btc_p = quotes.get('BTC-USD', {}).get('price', 90000)
+    net_diff, hashprice = get_mining_metrics(btc_p)
     
     regime_tag = factors['regime']
     btc = quotes.get('BTC-USD', {'pct': 0, 'price': 0}); qqq = quotes.get('QQQ', {'pct': 0})
@@ -692,6 +720,21 @@ def show_live_dashboard():
         shares_m = MINER_SHARES.get(p, 200)
         turnover_rate = (data['volume'] / (shares_m * 1000000)) * 100
         cols[i].markdown(miner_card_html(p, data['price'], data['pct'], turnover_rate), unsafe_allow_html=True)
+        
+    # --- NEW: Miner Macro Section ---
+    st.markdown("---")
+    st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>⛏️ 矿业宏观 (Miner Macro)</div>", unsafe_allow_html=True)
+    m1, m2, m3 = st.columns(3)
+    
+    diff_str = f"{net_diff/1e12:.1f} T"
+    hash_str = f"${hashprice:.2f}"
+    beta_val = factors['beta_btc']
+    beta_color = "color-up" if beta_val > 1.2 else ("color-down" if beta_val < 0.8 else "color-neutral")
+    
+    with m1: st.markdown(card_html("全网难度 (Difficulty)", diff_str, None, 0, "Network"), unsafe_allow_html=True)
+    with m2: st.markdown(card_html("挖矿收益 (Hashprice)", hash_str, "PH/Day", 1, "Est"), unsafe_allow_html=True)
+    with m3: st.markdown(card_html("Beta vs BTC", f"{beta_val:.2f}", "High Beta" if beta_val>1.5 else "Low Beta", 1 if beta_val>1 else -1, "30d Kalman"), unsafe_allow_html=True)
+    # --------------------------------
     
     # --- OPTIONS RADAR + INTENT + EXPANDER ---
     if opt_data:
@@ -730,7 +773,7 @@ def show_live_dashboard():
         <div style="margin-bottom:8px;"></div>
         """, unsafe_allow_html=True)
 
-        # 2. 详细解读 Expander (已修复箭头重叠问题)
+        # 2. 详细解读 Expander
         with st.expander("💡 它是如何工作的？(实战解读指南)"):
             st.markdown(f"""
             <div style='font-size: 0.85rem; color: #444; line-height: 1.6;'>
@@ -871,7 +914,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.12 Fix | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.13 Macro | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.12 Fix")
+st.markdown("### ⚡ BTDR 领航员 v13.13 Macro")
 show_live_dashboard()
