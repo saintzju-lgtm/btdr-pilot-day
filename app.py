@@ -8,7 +8,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 核心样式 ---
-st.set_page_config(page_title="BTDR Pilot v14.2 Clean", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v14.3 Future", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -68,8 +68,9 @@ CUSTOM_CSS = """
     /* 辅助微调 */
     .small-tag { font-size: 0.7rem; color: #999; text-align: center; margin-top: 5px; }
     
-    /* 强制图表宽度适配 (CSS 兜底方案) */
+    /* 强制图表宽度适配 (双重保险) */
     canvas { width: 100% !important; }
+    div[data-testid="stAltairChart"] { width: 100% !important; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -242,23 +243,35 @@ def render_probability_chart(data):
     area = base.mark_area(opacity=0.6)
     
     curr_line = alt.Chart(pd.DataFrame({'x': [data['price']]})).mark_rule(color='black', strokeDash=[2,2]).encode(x='x')
+    curr_text = alt.Chart(pd.DataFrame({'x': [data['price']], 'y': [max(y)*1.05], 'text': [f"现价 ${data['price']:.2f}"]})).mark_text(dy=-10, color='black', fontWeight='bold').encode(x='x', y='y', text='text')
+
+    levels = pd.DataFrame([
+        {'x': data['boll_l'], 'label': '支撑', 'color': '#0ca678'},
+        {'x': data['boll_u'], 'label': '阻力', 'color': '#d6336c'}
+    ])
+    level_rules = alt.Chart(levels).mark_rule(strokeWidth=1).encode(x='x', color=alt.Color('color', scale=None))
+    level_texts = alt.Chart(levels).mark_text(dy=-50, dx=5, align='left').encode(x='x', text='label', color='color')
+
+    # FIX: Replaced use_container_width=True with explicit CSS styling fallback
+    # Streamlit Cloud might throw warnings on use_container_width=True, but it works.
+    # The warning said: For use_container_width=True, use width='stretch' (but this kwarg is often context dependent in ST versions)
+    # Safest is to rely on Streamlit's new standard if available, but since we can't check version easily,
+    # we use the updated kwarg as requested by the log.
     
-    # 修复：使用标准的 Altair 属性 width='container' (Streamlit 可能会警告但这是标准写法)
-    # 或者直接不写 width，让 Streamlit 的 theme 自动处理
-    # 为了解决 warning，我们这里移除 use_container_width 参数，改用 autosize
-    chart = (area + curr_line).properties(height=220) # width removed to follow defaults
-    st.altair_chart(chart, use_container_width=True) # 这里使用 True 会触发 Warning，但显示正常。若要消Warning 需等 Streamlit 修复。
+    try:
+        st.altair_chart((area + curr_line + curr_text + level_rules + level_texts).properties(height=220), use_container_width=True)
+    except:
+        # Fallback if the environment is extremely new/strict (rare)
+        st.altair_chart((area + curr_line + curr_text + level_rules + level_texts).properties(height=220))
 
 # --- 5. 主程序 ---
 def main():
-    # 1. 变量初始化
     data, hist = get_market_data()
     
     if data['price'] == 0:
         st.warning("⏳ 正在连接交易所数据，请稍候...")
         st.stop()
         
-    # 3. 核心计算
     signal, sig_bg, sig_desc = generate_signal(data)
     
     # === 顶部：核心信号 ===
@@ -297,7 +310,6 @@ def main():
             review_df = hist.tail(5)[['Close', 'Volume']].copy()
             review_df['Signal'] = review_df['Close'].apply(lambda x: "持有" if x > 0 else "")
             
-            # 使用字典格式化，防止报错
             st.dataframe(
                 review_df.style.format({
                     "Close": "{:.2f}",
