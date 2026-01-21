@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.6 Smart", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.7 Strict", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -227,7 +227,6 @@ def get_options_data(symbol, current_price):
         exps = tk.options
         if not exps: return None
         
-        # 1. 强制排序日期
         sorted_dates = sorted(exps)
         today_str = datetime.now().strftime('%Y-%m-%d')
         
@@ -235,8 +234,8 @@ def get_options_data(symbol, current_price):
         calls = pd.DataFrame()
         puts = pd.DataFrame()
 
-        # 2. 策略调整：只要有数据就接受，不再过度挑剔流动性，优先保证“最近”
-        # 即使数据少，也比直接跳到2026年好
+        # 1. 强制取最近的有效日期 (避免直接跳到 2026)
+        # 只要有一行数据就认为是有效，宁可数据少，也不能看明年
         for d in sorted_dates:
             if d < today_str: continue 
             
@@ -245,62 +244,53 @@ def get_options_data(symbol, current_price):
                 target_date = d
                 calls = chain.calls
                 puts = chain.puts
-                break
+                break # 找到最近的就立刻停止，绝不往后找
         
-        # 如果还是空，兜底取第一个未来日期
-        if target_date is None:
-            target_date = sorted_dates[0]
-            chain = tk.option_chain(target_date)
-            calls = chain.calls
-            puts = chain.puts
-
+        if target_date is None: return None
         if calls.empty and puts.empty: return None
 
-        # 3. 价格清洗 (保留 ±50%)
-        lower_bound = current_price * 0.5
-        upper_bound = current_price * 1.5
+        # 2. Max Pain 专用清洗 (只看现价 ±20%)
+        # 这样能剔除 $2.0, $7.5 这种远古期权的干扰，计算出“当下的痛点”
+        mp_lower = current_price * 0.8
+        mp_upper = current_price * 1.2
         
-        calls_clean = calls[(calls['strike'] >= lower_bound) & (calls['strike'] <= upper_bound)]
-        puts_clean = puts[(puts['strike'] >= lower_bound) & (puts['strike'] <= upper_bound)]
+        c_mp = calls[(calls['strike'] >= mp_lower) & (calls['strike'] <= mp_upper)]
+        p_mp = puts[(puts['strike'] >= mp_lower) & (puts['strike'] <= mp_upper)]
         
-        if calls_clean.empty: calls_clean = calls
-        if puts_clean.empty: puts_clean = puts
-        
-        # PCR
+        # PCR (使用全部数据，反映整体情绪)
         total_call_vol = calls['volume'].sum() if not calls.empty else 1
         total_put_vol = puts['volume'].sum() if not puts.empty else 0
         pcr_vol = total_put_vol / total_call_vol
         
-        # Max Pain
-        strikes = set(calls_clean['strike']).union(set(puts_clean['strike']))
+        # Max Pain 计算
+        strikes = set(c_mp['strike']).union(set(p_mp['strike']))
         min_loss = float('inf'); max_pain = current_price
         
         if strikes:
             for k in strikes:
-                call_loss = calls_clean[calls_clean['strike'] < k].apply(lambda x: (k - x['strike']) * x['openInterest'], axis=1).sum()
-                put_loss = puts_clean[puts_clean['strike'] > k].apply(lambda x: (x['strike'] - k) * x['openInterest'], axis=1).sum()
+                call_loss = c_mp[c_mp['strike'] < k].apply(lambda x: (k - x['strike']) * x['openInterest'], axis=1).sum()
+                put_loss = p_mp[p_mp['strike'] > k].apply(lambda x: (x['strike'] - k) * x['openInterest'], axis=1).sum()
                 total_loss = call_loss + put_loss
                 if total_loss < min_loss: 
                     min_loss = total_loss; max_pain = k
         
-        # --- FIX: Effective Walls (逻辑大改) ---
-        # Call Wall (阻力): 必须在现价上方(或等于)寻找最大OI
-        # Put Wall (支撑): 必须在现价下方(或等于)寻找最大OI
+        # 3. Walls 严格逻辑 (Strict Logic)
+        # Call Wall (阻力): 必须 > 现价
+        # Put Wall (支撑): 必须 < 现价
         
-        # 寻找阻力 (Call Wall)
-        calls_otm = calls_clean[calls_clean['strike'] >= current_price * 0.95] # 稍微放宽一点点避免刚好卡界线
-        if not calls_otm.empty:
-            call_wall = calls_otm.loc[calls_otm['openInterest'].idxmax()]['strike']
+        # 找阻力
+        calls_above = calls[calls['strike'] > current_price]
+        if not calls_above.empty:
+            call_wall = calls_above.loc[calls_above['openInterest'].idxmax()]['strike']
         else:
-            # 如果上方没有OI，就取所有清洗数据中最高的
-            call_wall = calls_clean.loc[calls_clean['openInterest'].idxmax()]['strike'] if not calls_clean.empty else current_price * 1.1
-
-        # 寻找支撑 (Put Wall)
-        puts_otm = puts_clean[puts_clean['strike'] <= current_price * 1.05]
-        if not puts_otm.empty:
-            put_wall = puts_otm.loc[puts_otm['openInterest'].idxmax()]['strike']
+            call_wall = current_price * 1.1 # Fallback
+            
+        # 找支撑
+        puts_below = puts[puts['strike'] < current_price]
+        if not puts_below.empty:
+            put_wall = puts_below.loc[puts_below['openInterest'].idxmax()]['strike']
         else:
-             put_wall = puts_clean.loc[puts_clean['openInterest'].idxmax()]['strike'] if not puts_clean.empty else current_price * 0.9
+            put_wall = current_price * 0.9 # Fallback
 
         return {
             "expiry": target_date, "pcr": pcr_vol, "max_pain": max_pain,
@@ -437,7 +427,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.6 Smart"
+        return final_model, factors, "v13.7 Strict"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -603,7 +593,7 @@ def show_live_dashboard():
 
     ai_model, factors, ai_status = run_grandmaster_analytics(live_price)
     
-    # 异步获取期权数据 (Smart Fix included)
+    # 异步获取期权数据 (Strict Fix included)
     opt_data = get_options_data('BTDR', live_price)
     
     regime_tag = factors['regime']
@@ -648,7 +638,7 @@ def show_live_dashboard():
         turnover_rate = (data['volume'] / (shares_m * 1000000)) * 100
         cols[i].markdown(miner_card_html(p, data['price'], data['pct'], turnover_rate), unsafe_allow_html=True)
     
-    # --- OPTIONS RADAR (UI UNCHANGED, LOGIC SMART) ---
+    # --- OPTIONS RADAR (UI UNCHANGED, LOGIC STRICT) ---
     if opt_data:
         st.markdown("---")
         st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>📡 期权雷达 (Options Flow)</div>", unsafe_allow_html=True)
@@ -797,7 +787,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.6 Smart | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.7 Strict | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.6 Smart")
+st.markdown("### ⚡ BTDR 领航员 v13.7 Strict")
 show_live_dashboard()
