@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v12.1 Ultimate", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v12.2 Asian-Pro", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -81,6 +81,16 @@ CUSTOM_CSS = """
     .act-main { font-size: 2rem; font-weight: 800; letter-spacing: 1px; }
     .act-sub { font-size: 0.8rem; font-weight: 500; opacity: 0.95; }
 
+    /* Chart Legend */
+    .chart-legend {
+        display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.75rem; color: #555;
+        background: #f8f9fa; padding: 6px 10px; border-radius: 6px; margin-bottom: 5px;
+        border: 1px solid #eee; align-items: center;
+    }
+    .legend-item { display: flex; align-items: center; gap: 4px; }
+    .legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+    .legend-val { font-weight: 700; color: #212529; margin-left: 2px; }
+
     /* Tooltip Core */
     .tooltip-text {
         visibility: hidden;
@@ -102,7 +112,7 @@ CUSTOM_CSS = """
     .factor-box:hover .tooltip-text { visibility: visible; opacity: 1; }
     .metric-card:hover .tooltip-text { visibility: visible; opacity: 1; }
     
-    .color-up { color: #0ca678; } .color-down { color: #d6336c; } .color-neutral { color: #adb5bd; }
+    .color-up { color: #e03131; } .color-down { color: #0ca678; } .color-neutral { color: #adb5bd; }
     
     .status-dot { height: 6px; width: 6px; border-radius: 50%; display: inline-block; margin-left: 6px; margin-bottom: 2px; }
     .dot-pre { background-color: #f59f00; box-shadow: 0 0 4px #f59f00; }
@@ -331,7 +341,7 @@ def run_grandmaster_analytics():
             "ensemble_mom_h": df_reg['Target_High'].tail(3).max(), "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": top_peers
         }
-        return final_model, factors, "v12.1 Ultimate"
+        return final_model, factors, "v12.2 Asian-Pro"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -431,35 +441,57 @@ def get_realtime_data():
         return quotes, fng, live_volatility, btdr_history
     except: return None, 50, 0.01, pd.DataFrame()
 
-# --- 6. 绘图函数 ---
+# --- 6. 绘图函数 (Red=Up, Green=Down) ---
 def draw_kline_chart(df):
-    if df.empty: return alt.Chart(pd.DataFrame()).mark_text().encode(text=alt.value("No Data"))
+    if df.empty: return alt.Chart(pd.DataFrame()).mark_text().encode(text=alt.value("No Data")), ""
     
-    # Data Prep
-    df = df.reset_index().rename(columns={"Date": "T"})
-    df = df.tail(60) # Show last 60 days
+    # 1. 计算指标 (Pandas Core)
+    df = df.copy()
+    df['MA5'] = df['Close'].rolling(window=5).mean()
+    df['MA20'] = df['Close'].rolling(window=20).mean()
+    df['STD20'] = df['Close'].rolling(window=20).std()
+    df['BOLL_U'] = df['MA20'] + 2 * df['STD20']
+    df['BOLL_L'] = df['MA20'] - 2 * df['STD20']
+    
+    # 2. 构造 Legend HTML
+    last = df.iloc[-1]
+    legend_html = f"""
+    <div class="chart-legend">
+        <div class="legend-item"><span class="legend-dot" style="background:#228be6;"></span><span style="color:#228be6;">MA5:</span><span class="legend-val">{last['MA5']:.2f}</span></div>
+        <div class="legend-item"><span class="legend-dot" style="background:#f59f00;"></span><span style="color:#f59f00;">MA20:</span><span class="legend-val">{last['MA20']:.2f}</span></div>
+        <div class="legend-item"><span class="legend-dot" style="background:#adb5bd;"></span><span style="color:#868e96;">BOLL(Up):</span><span class="legend-val">{last['BOLL_U']:.2f}</span></div>
+        <div class="legend-item"><span class="legend-dot" style="background:#adb5bd;"></span><span style="color:#868e96;">BOLL(Low):</span><span class="legend-val">{last['BOLL_L']:.2f}</span></div>
+    </div>
+    """
+
+    # 3. Altair 绘图 (红涨绿跌)
+    df = df.reset_index().rename(columns={"Date": "T"}).tail(80) # Show last 80 days
     
     base = alt.Chart(df).encode(x=alt.X('T:T', axis=alt.Axis(format='%m/%d', title=None)))
     
-    # Candlestick
+    # K线规则: Close > Open => Red (#e03131), Close < Open => Green (#0ca678)
     rule = base.mark_rule().encode(y=alt.Y('Low:Q', scale=alt.Scale(zero=False)), y2='High:Q')
-    bar = base.mark_bar(width=8).encode(
+    bar = base.mark_bar(width=6).encode(
         y='Open:Q', y2='Close:Q',
-        color=alt.condition("datum.Open < datum.Close", alt.value("#0ca678"), alt.value("#e03131"))
+        color=alt.condition("datum.Close >= datum.Open", alt.value("#e03131"), alt.value("#0ca678"))
     )
     
-    # MA Lines
-    line_5 = base.mark_line(color='#228be6', size=1, opacity=0.8).transform_window(rolling_mean='mean(Close)', frame=[-4, 0]).encode(y='rolling_mean:Q')
-    line_20 = base.mark_line(color='#f59f00', size=1, opacity=0.8).transform_window(rolling_mean='mean(Close)', frame=[-19, 0]).encode(y='rolling_mean:Q')
+    # Lines
+    line_5 = base.mark_line(color='#228be6', size=1.5).encode(y='MA5:Q')
+    line_20 = base.mark_line(color='#f59f00', size=1.5).encode(y='MA20:Q')
+    line_bu = base.mark_line(color='#adb5bd', strokeDash=[4,2], size=1).encode(y='BOLL_U:Q')
+    line_bl = base.mark_line(color='#adb5bd', strokeDash=[4,2], size=1).encode(y='BOLL_L:Q')
     
     # Volume
     vol = base.mark_bar(opacity=0.3).encode(
-        y=alt.Y('Volume:Q', axis=alt.Axis(title='Volume', labels=False, ticks=False)),
-        color=alt.condition("datum.Open < datum.Close", alt.value("#0ca678"), alt.value("#e03131"))
-    ).properties(height=50)
+        y=alt.Y('Volume:Q', axis=alt.Axis(title='Vol', labels=False, ticks=False)),
+        color=alt.condition("datum.Close >= datum.Open", alt.value("#e03131"), alt.value("#0ca678"))
+    ).properties(height=60)
     
-    chart = (rule + bar + line_5 + line_20).properties(height=200)
-    return alt.vconcat(chart, vol).resolve_scale(x='shared').interactive()
+    chart = (rule + bar + line_5 + line_20 + line_bu + line_bl).properties(height=240)
+    final_chart = alt.vconcat(chart, vol).resolve_scale(x='shared').interactive()
+    
+    return final_chart, legend_html
 
 # --- 7. 仪表盘展示 ---
 @st.fragment(run_every=15)
@@ -502,10 +534,11 @@ def show_live_dashboard():
             
     st.markdown("---")
     
-    # --- 新增：K线图区域 ---
-    st.markdown("### 📈 BTDR K-Line (Daily)")
+    # --- 新增：K线图区域 (带 BOLL 和 Legend) ---
+    st.markdown("### 📈 BTDR K-Line (Daily + BOLL)")
     if not btdr_hist.empty:
-        chart_k = draw_kline_chart(btdr_hist)
+        chart_k, legend_html = draw_kline_chart(btdr_hist)
+        st.markdown(legend_html, unsafe_allow_html=True)
         st.altair_chart(chart_k, use_container_width=True)
     else:
         st.info("Market data initializing for chart...")
@@ -615,7 +648,7 @@ def show_live_dashboard():
     ).properties(height=220)
     st.altair_chart(chart_pdf, use_container_width=True)
     
-    # Chart 2: Monte Carlo - Fix: Separate chart to ensure width
+    # Chart 2: Monte Carlo
     current_vol = factors['vol_base']; long_term_vol = 0.05; drift = drift_est
     sims, days, dt = 1500, 5, 1
     price_paths = np.zeros((sims, days + 1)); price_paths[:, 0] = btdr['price']
@@ -636,7 +669,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v12.1 Ultimate | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v12.2 Asian-Pro | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v12.1 Ultimate")
+st.markdown("### ⚡ BTDR 领航员 v12.2 Asian-Pro")
 show_live_dashboard()
