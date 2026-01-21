@@ -10,11 +10,13 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Command Center v13.25", layout="centered")
+st.set_page_config(page_title="BTDR Command Center v13.24", layout="centered")
 
-# --- NEW: 锁定核心常量 (Based on your feedback) ---
-# 这是一个经过人工校对的“真理值”
-LOCKED_FLOAT_SHARES = 121100000 # 1.211亿 (精准对齐主流软件)
+# --- 缓存初始化 ---
+if 'cached_total_shares' not in st.session_state:
+    st.session_state['cached_total_shares'] = 232000000 
+if 'cached_float_shares' not in st.session_state:
+    st.session_state['cached_float_shares'] = 121000000
 
 CUSTOM_CSS = """
 <style>
@@ -23,7 +25,6 @@ CUSTOM_CSS = """
     .stApp { margin-top: -30px; background-color: #ffffff; }
     div[data-testid="stStatusWidget"] { visibility: hidden; }
     
-    /* Font Fix */
     .metric-card, .miner-card, .factor-box, .action-banner, .intent-box, .scen-card, .time-bar, .chart-legend, .profile-bar {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
         color: #212529 !important;
@@ -33,7 +34,6 @@ CUSTOM_CSS = """
         overflow: hidden !important; border: 1px solid #f8f9fa; border-radius: 8px;
     }
     
-    /* Metric Card */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef;
         border-radius: 12px;
@@ -48,7 +48,6 @@ CUSTOM_CSS = """
     .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
     .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
-    /* Miner Card */
     .miner-card {
         background-color: #fff; border: 1px solid #e9ecef;
         border-radius: 10px; padding: 8px 10px;
@@ -62,7 +61,6 @@ CUSTOM_CSS = """
     .miner-pct { font-weight: 600; }
     .miner-turn { color: #868e96; }
     
-    /* Factor Box */
     .factor-box {
         background: #fff;
         border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
@@ -74,7 +72,6 @@ CUSTOM_CSS = """
     .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; margin: 2px 0; }
     .factor-sub { font-size: 0.7rem; font-weight: 600; }
     
-    /* Action Banner */
     .action-banner {
         padding: 15px; border-radius: 10px; text-align: center; margin-bottom: 20px;
         display: flex; align-items: center; justify-content: space-between;
@@ -87,7 +84,6 @@ CUSTOM_CSS = """
     .act-main { font-size: 2rem; font-weight: 800; letter-spacing: 1px; }
     .act-sub { font-size: 0.8rem; font-weight: 500; opacity: 0.95; }
 
-    /* Chart Legend */
     .chart-legend {
         display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.75rem; color: #555;
         background: #f8f9fa; padding: 6px 10px; border-radius: 6px; margin-bottom: 5px;
@@ -97,7 +93,6 @@ CUSTOM_CSS = """
     .legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
     .legend-val { font-weight: 700; color: #212529; margin-left: 2px; }
 
-    /* Tooltip Core */
     .tooltip-text {
         visibility: hidden;
         width: 180px; background-color: rgba(33, 37, 41, 0.95);
@@ -139,7 +134,6 @@ CUSTOM_CSS = """
     .bar-mom { background-color: #fa5252; transition: width 0.5s; }
     .bar-ai { background-color: #be4bdb; transition: width 0.5s; }
     
-    /* Scenario Card Styles */
     .scen-card {
         background: #fff; border: 1px solid #eee; border-radius: 8px;
         padding: 12px; text-align: left; height: 100%; min-height: 110px;
@@ -157,7 +151,6 @@ CUSTOM_CSS = """
 
     .tag-smart { background: #228be6; color: white; padding: 1px 5px; border-radius: 4px; font-size: 0.6rem; vertical-align: middle; margin-left: 5px; }
     
-    /* Intent Box */
     .intent-box {
         background-color: #fff; border-left: 4px solid #333;
         padding: 12px; margin-top: 8px; border-radius: 6px;
@@ -178,7 +171,6 @@ CUSTOM_CSS = """
         border: 1px solid #eee !important;
     }
     
-    /* Profile Bar - High Contrast */
     .profile-bar {
         display: flex; justify-content: space-around; background: #343a40; color: #fff !important;
         padding: 10px; border-radius: 8px; margin-bottom: 15px; font-size: 0.8rem;
@@ -234,7 +226,7 @@ def action_banner_html(action, reason, sub_text):
     </div>
     """
 
-# --- 4. 核心计算 (AI & Math Core) ---
+# --- 4. 核心计算 ---
 def run_kalman_filter(y, x, delta=1e-4):
     try:
         n = len(y)
@@ -334,7 +326,7 @@ def get_options_data(symbol, current_price):
         print(f"Options Error: {e}")
         return None
 
-# --- NEW: Miner Macro Data & Insight ---
+# --- Mining Data ---
 @st.cache_data(ttl=3600)
 def get_mining_metrics(btc_price):
     try:
@@ -532,7 +524,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.25 Source Match"
+        return final_model, factors, "v13.24 Hotfix"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -602,27 +594,25 @@ def get_realtime_data():
                 shares_total = fast.shares or info.get('sharesOutstanding')
                 if shares_total: st.session_state['cached_total_shares'] = shares_total
             except: pass
+            shares_calc_cap = st.session_state['cached_total_shares']
             
-            # Float Shares (for Turnover) - Fallback to LOCKED constant if API fails
+            # Float Shares (for Turnover)
             try:
-                float_s = info.get('floatShares')
-                if float_s and float_s > 0: 
-                    st.session_state['cached_float_shares'] = float_s
+                float_shares = info.get('floatShares')
+                if float_shares: st.session_state['cached_float_shares'] = float_shares
             except: pass
             
             last_p = fast.last_price
             if not last_p: last_p = btdr_full['Close'].iloc[-1]
             
             # Market Cap
-            mkt_cap = last_p * st.session_state['cached_total_shares']
+            mkt_cap = last_p * shares_calc_cap
             
             # 52 Week Range
             h52 = fast.year_high
             l52 = fast.year_low
-            if not h52 or pd.isna(h52):
-                h52 = btdr_full['High'].max()
-            if not l52 or pd.isna(l52):
-                l52 = btdr_full['Low'].min()
+            if not h52 or pd.isna(h52): h52 = btdr_full['High'].max()
+            if not l52 or pd.isna(l52): l52 = btdr_full['Low'].min()
             
             # Earnings Date Fix
             try:
@@ -653,35 +643,16 @@ def get_realtime_data():
         for sym in symbols:
             try:
                 t = yf.Ticker(sym)
-                
-                # --- FIX: Volume Source Priority ---
-                # Priority 1: regularMarketVolume (Matches Broker Apps)
-                # Priority 2: fast_info.last_volume
-                # Priority 3: history 1d
-                
-                vol = 0
-                price_hist = 0
-                
-                # Try fetch info first for regular volume
-                try:
-                    i = t.info
-                    vol = i.get('regularMarketVolume', 0)
-                except: pass
-                
-                # If info failed or 0, try fast_info
-                if vol == 0:
-                    try: vol = t.fast_info.last_volume
-                    except: pass
-                
-                # If still 0, try history
                 try:
                     hist_day = t.history(period="1d")
                     if not hist_day.empty:
-                        if vol == 0: vol = hist_day['Volume'].iloc[-1]
+                        vol = hist_day['Volume'].iloc[-1]
                         price_hist = hist_day['Close'].iloc[-1]
-                except: pass
+                    else:
+                        vol = 0; price_hist = 0
+                except:
+                    vol = 0; price_hist = 0
                 
-                # Price Logic
                 try: 
                     price = t.fast_info['last_price']
                     prev = t.fast_info['previous_close']
@@ -816,7 +787,6 @@ def show_live_dashboard():
         support_label_color = "#ffffff"; support_label_text = f"${p_low:.2f}"
 
     # --- UI Rendering ---
-    # Top Profile Bar (Fixed)
     mkt_cap_str = f"${profile['mkt_cap']/1e9:.2f}B" if profile['mkt_cap'] else "N/A"
     range_str = f"${profile['l52']:.2f} - ${profile['h52']:.2f}" if profile['h52'] else "N/A"
     
@@ -880,9 +850,8 @@ def show_live_dashboard():
     with l2: st.markdown(card_html("RVOL (量比)", f"{rvol:.2f}", "High Vol" if rvol>1.5 else "Low Vol", 1 if rvol>1.5 else 0), unsafe_allow_html=True)
     
     # Dynamic Shares for Turnover (Fixed: Use Float Shares)
-    # Locked Float: 121,100,000 (Based on your feedback)
-    float_shares_final = st.session_state.get('cached_float_shares', LOCKED_FLOAT_SHARES)
-    turnover = (btdr['volume'] / float_shares_final) * 100
+    float_shares = st.session_state.get('cached_float_shares', 121000000)
+    turnover = (btdr['volume'] / float_shares) * 100
     with l3: st.markdown(card_html("换手率 (Turnover)", f"{turnover:.2f}%", None, 0), unsafe_allow_html=True)
     
     with st.expander("🌊 如何解读流动性与情绪？(Sentiment Guide)"):
@@ -928,7 +897,6 @@ def show_live_dashboard():
         </div>
         """, unsafe_allow_html=True)
 
-        # 1. 意图 Box
         i_title, i_desc, i_color = get_mm_intent(btdr['price'], opt_data['max_pain'], opt_data['call_wall'], opt_data['put_wall'], opt_data['pcr'])
         st.markdown(f"""
         <div class="intent-box">
@@ -938,7 +906,6 @@ def show_live_dashboard():
         <div style="margin-bottom:8px;"></div>
         """, unsafe_allow_html=True)
 
-        # 2. 详细解读 Expander
         with st.expander("💡 它是如何工作的？(实战解读指南)"):
             st.markdown(f"""
             <div style='font-size: 0.85rem; color: #444; line-height: 1.6;'>
@@ -1079,7 +1046,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.25 Source Match | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.23 Calibration | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.25 Source Match")
+st.markdown("### ⚡ BTDR 领航员 v13.23 Calibration")
 show_live_dashboard()
