@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Command Center v13.19", layout="centered")
+st.set_page_config(page_title="BTDR Command Center v13.20", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -174,14 +174,15 @@ CUSTOM_CSS = """
         border: 1px solid #eee !important;
     }
     
-    /* NEW: Profile Bar */
+    /* NEW: Profile Bar - High Contrast */
     .profile-bar {
         display: flex; justify-content: space-around; background: #343a40; color: #fff !important;
-        padding: 8px; border-radius: 8px; margin-bottom: 15px; font-size: 0.8rem;
+        padding: 10px; border-radius: 8px; margin-bottom: 15px; font-size: 0.8rem;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.1);
     }
     .profile-item { text-align: center; }
-    .profile-lbl { font-size: 0.65rem; opacity: 0.8; text-transform: uppercase; color: #ddd; }
-    .profile-val { font-weight: bold; font-size: 0.9rem; color: #fff; }
+    .profile-lbl { font-size: 0.65rem; opacity: 0.9; text-transform: uppercase; color: #ced4da !important; font-weight: 600; letter-spacing: 0.5px;}
+    .profile-val { font-weight: 800; font-size: 1.0rem; color: #fff !important; margin-top: 2px;}
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -267,6 +268,7 @@ def get_options_data(symbol, current_price):
         puts_list = []
         valid_dates = []
         
+        # Aggregation
         for d in sorted_dates:
             d_obj = datetime.strptime(d, '%Y-%m-%d')
             if d_obj < today: continue
@@ -282,6 +284,7 @@ def get_options_data(symbol, current_price):
         all_calls = pd.concat(calls_list)
         all_puts = pd.concat(puts_list)
         
+        # Cleaning
         lower_bound = current_price * 0.7
         upper_bound = current_price * 1.3
         
@@ -291,10 +294,12 @@ def get_options_data(symbol, current_price):
         if c_clean.empty: c_clean = all_calls
         if p_clean.empty: p_clean = all_puts
         
+        # PCR
         total_call_vol = all_calls['volume'].sum() if not all_calls.empty else 1
         total_put_vol = all_puts['volume'].sum() if not all_puts.empty else 0
         pcr_vol = total_put_vol / total_call_vol
         
+        # Max Pain
         strikes = set(c_clean['strike']).union(set(p_clean['strike']))
         min_loss = float('inf'); max_pain = current_price
         
@@ -306,6 +311,7 @@ def get_options_data(symbol, current_price):
                 if total_loss < min_loss: 
                     min_loss = total_loss; max_pain = k
         
+        # Walls
         calls_above = c_clean[c_clean['strike'] > current_price]
         if not calls_above.empty:
             call_oi_map = calls_above.groupby('strike')['openInterest'].sum()
@@ -527,7 +533,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.19 Fixed"
+        return final_model, factors, "v13.20 Resilience"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -576,54 +582,68 @@ def get_signal_recommendation(curr_price, factors, p_low):
         
     return action, " | ".join(reasons[:2]), sub_text, score, macd_hist, support_broken
 
-# --- FIX: ROBUST VOLUME & INFO FETCHING ---
+# --- FIX: ROBUST VOLUME, SHARES & CALCULATION ---
 def get_realtime_data():
     tickers_list = "BTC-USD BTDR QQQ ^VIX " + " ".join(MINER_POOL)
     symbols = tickers_list.split()
     try:
-        btdr_full = yf.Ticker("BTDR").history(period="6mo", interval="1d")
+        # 1. Fetch History (1 Year for robustness)
+        btdr_full = yf.Ticker("BTDR").history(period="1y", interval="1d")
         btdr_full.index = btdr_full.index.tz_localize(None)
         
-        # --- FIX: Market Cap & Earnings Calculation ---
+        # 2. Robust Profile Data Fetching
         try:
             btdr_obj = yf.Ticker("BTDR")
-            # 1. Fetch Fast Info for real-time Cap
+            info = btdr_obj.info
             fast = btdr_obj.fast_info
             
-            # 2. Market Cap Fix: Price * Shares
-            last_p = fast.last_price
+            # --- Shares Outstanding Fix ---
+            # Try fast_info -> info -> hardcoded fallback
             shares = fast.shares
-            if last_p and shares:
-                mkt_cap = last_p * shares
-            else:
-                mkt_cap = btdr_obj.info.get('marketCap', 0)
-                
-            # 3. Earnings Date Fix: Use Calendar
-            cal = btdr_obj.calendar
-            if cal is not None and not cal.empty:
-                # Calendar might have 'Earnings Date' or 0 as key
-                if 'Earnings Date' in cal:
-                    dates = cal['Earnings Date']
-                    # Get the first future date
-                    future_dates = [d for d in dates if d > datetime.now().date()]
-                    if future_dates:
-                        next_earn = future_dates[0].strftime('%Y-%m-%d')
-                    else:
-                        next_earn = "TBD"
-                else:
-                    # Fallback structure vary by yfinance version
-                    next_earn = "TBD"
-            else:
-                next_earn = "TBD"
+            if not shares: shares = info.get('sharesOutstanding')
+            if not shares: shares = 144000000 # Approx fallback to ensure calc works
             
-            # Other info
-            short_float = btdr_obj.info.get('shortPercentOfFloat', 0)
+            # --- Price for Calc ---
+            last_p = fast.last_price
+            if not last_p: last_p = btdr_full['Close'].iloc[-1]
+            
+            # --- Market Cap Calc ---
+            mkt_cap = last_p * shares
+            
+            # --- 52 Week Range Calc (Self-Healing) ---
+            # Check fast_info first
             h52 = fast.year_high
             l52 = fast.year_low
+            # If N/A, calculate from history
+            if not h52 or pd.isna(h52):
+                h52 = btdr_full['High'].max()
+            if not l52 or pd.isna(l52):
+                l52 = btdr_full['Low'].min()
             
+            # --- Earnings Date Fix ---
+            # Try calendar -> news/info -> "TBD"
+            try:
+                cal = btdr_obj.calendar
+                # Check if calendar is valid dict or df
+                if isinstance(cal, dict) and 'Earnings Date' in cal:
+                    dates = cal['Earnings Date']
+                    future = [d for d in dates if d > datetime.now().date()]
+                    if future: next_earn = future[0].strftime('%Y-%m-%d')
+                    else: next_earn = "TBD"
+                elif isinstance(cal, pd.DataFrame) and not cal.empty:
+                     # Some versions return DF with column 0 or 'Earnings Date'
+                     vals = cal.iloc[0].values
+                     next_earn = str(vals[0])[:10]
+                else:
+                    next_earn = "Est. Q1/Q2" # Soft fallback
+            except:
+                next_earn = "TBD"
+            
+            short_float = info.get('shortPercentOfFloat', 0)
             if short_float is None: short_float = 0
+            
         except: 
-            short_float = 0; mkt_cap = 0; h52 = 0; l52 = 0; next_earn = "N/A"
+            short_float = 0; mkt_cap = 0; h52 = 0; l52 = 0; next_earn = "TBD"
         
         quotes = {}
         tz_ny = pytz.timezone('America/New_York'); now_ny = datetime.now(tz_ny); state_tag, state_css = determine_market_state(now_ny)
@@ -746,11 +766,9 @@ def show_live_dashboard():
         return
 
     ai_model, factors, ai_status = run_grandmaster_analytics(live_price)
-    
-    # 获取数据
     opt_data = get_options_data('BTDR', live_price)
     
-    # 获取宏观数据
+    # Macro
     btc_p = quotes.get('BTC-USD', {}).get('price', 90000)
     net_diff, hashprice = get_mining_metrics(btc_p)
     
@@ -862,7 +880,7 @@ def show_live_dashboard():
     
     st.markdown("---")
     
-    # --- OPTIONS RADAR + INTENT + EXPANDER ---
+    # --- OPTIONS RADAR ---
     if opt_data:
         st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>📡 期权雷达 (Real-Time Aggregate)</div>", unsafe_allow_html=True)
         
@@ -1039,7 +1057,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.19 Fixed | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.20 Resilience | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.19 Fixed")
+st.markdown("### ⚡ BTDR 领航员 v13.20 Resilience")
 show_live_dashboard()
