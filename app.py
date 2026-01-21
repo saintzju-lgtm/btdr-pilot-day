@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.17 DataFix", layout="centered")
+st.set_page_config(page_title="BTDR Command Center v13.18", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -19,10 +19,10 @@ CUSTOM_CSS = """
     .stApp { margin-top: -30px; background-color: #ffffff; }
     div[data-testid="stStatusWidget"] { visibility: hidden; }
     
-    /* Global Font & Color Fix - High Contrast */
-    .metric-card, .miner-card, .factor-box, .action-banner, .intent-box, .scen-card, .time-bar, .chart-legend {
+    /* Global Font Fix */
+    .metric-card, .miner-card, .factor-box, .action-banner, .intent-box, .scen-card, .time-bar, .chart-legend, .profile-bar {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
-        color: #212529 !important; /* Force Dark Text */
+        color: #212529 !important;
     }
     
     div[data-testid="stAltairChart"] {
@@ -173,6 +173,15 @@ CUSTOM_CSS = """
         border-radius: 6px !important;
         border: 1px solid #eee !important;
     }
+    
+    /* NEW: Profile Bar */
+    .profile-bar {
+        display: flex; justify-content: space-around; background: #343a40; color: #fff !important;
+        padding: 8px; border-radius: 8px; margin-bottom: 15px; font-size: 0.8rem;
+    }
+    .profile-item { text-align: center; }
+    .profile-lbl { font-size: 0.65rem; opacity: 0.8; text-transform: uppercase; }
+    .profile-val { font-weight: bold; font-size: 0.9rem; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -523,7 +532,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.17 DataFix"
+        return final_model, factors, "v13.18 Command Center"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -580,11 +589,25 @@ def get_realtime_data():
         btdr_full = yf.Ticker("BTDR").history(period="6mo", interval="1d")
         btdr_full.index = btdr_full.index.tz_localize(None)
         
+        # --- NEW: Full Profile Data ---
         try:
             btdr_info = yf.Ticker("BTDR").info
             short_float = btdr_info.get('shortPercentOfFloat', 0)
+            mkt_cap = btdr_info.get('marketCap', 0)
+            h52 = btdr_info.get('fiftyTwoWeekHigh', 0)
+            l52 = btdr_info.get('fiftyTwoWeekLow', 0)
+            
+            # Simple Earnings Date Hack (yfinance format varies)
+            # Try to get next earnings from news or cal, fallback to 'N/A'
+            earn_ts = btdr_info.get('earningsTimestamp', None) # rare
+            if earn_ts: 
+                next_earn = datetime.fromtimestamp(earn_ts).strftime('%Y-%m-%d')
+            else:
+                next_earn = "Pending"
+                
             if short_float is None: short_float = 0
-        except: short_float = 0
+        except: 
+            short_float = 0; mkt_cap = 0; h52 = 0; l52 = 0; next_earn = "N/A"
         
         quotes = {}
         tz_ny = pytz.timezone('America/New_York'); now_ny = datetime.now(tz_ny); state_tag, state_css = determine_market_state(now_ny)
@@ -593,8 +616,6 @@ def get_realtime_data():
         for sym in symbols:
             try:
                 t = yf.Ticker(sym)
-                
-                # --- FIX: Always fetch history for Volume ---
                 try:
                     hist_day = t.history(period="1d")
                     if not hist_day.empty:
@@ -604,19 +625,15 @@ def get_realtime_data():
                         vol = 0
                         price_hist = 0
                 except:
-                    vol = 0
-                    price_hist = 0
+                    vol = 0; price_hist = 0
                 
-                # --- Try Fast Info for Price ---
                 try: 
                     price = t.fast_info['last_price']
                     prev = t.fast_info['previous_close']
                 except:
-                    # Fallback to history if fast info fails
                     price = price_hist
                     prev = t.info.get('previousClose', price)
                 
-                # Zero Price Check
                 if price == 0 and price_hist > 0: price = price_hist
                 if prev == 0: prev = price
                 
@@ -633,8 +650,9 @@ def get_realtime_data():
         try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1.0).json()['data'][0]['value'])
         except: fng = 50
         
-        return quotes, fng, live_volatility, btdr_full, short_float
-    except: return None, 50, 0.01, pd.DataFrame(), 0
+        profile = {"mkt_cap": mkt_cap, "h52": h52, "l52": l52, "next_earn": next_earn}
+        return quotes, fng, live_volatility, btdr_full, short_float, profile
+    except: return None, 50, 0.01, pd.DataFrame(), 0, {}
 
 # --- 6. 绘图函数 ---
 def draw_kline_chart(df, live_price):
@@ -703,7 +721,7 @@ def show_live_dashboard():
     ai_status = "Init"
     act, reason, sub = "WAIT", "Initializing...", "Please wait"
     
-    quotes, fng_val, live_vol_btdr, btdr_hist, short_float = get_realtime_data()
+    quotes, fng_val, live_vol_btdr, btdr_hist, short_float, profile = get_realtime_data()
     live_price = quotes.get('BTDR', {}).get('price', 0)
     
     if live_price <= 0:
@@ -745,6 +763,18 @@ def show_live_dashboard():
         support_label_color = "#ffffff"; support_label_text = f"${p_low:.2f}"
 
     # --- UI Rendering ---
+    # Top Profile Bar (NEW)
+    mkt_cap_str = f"${profile['mkt_cap']/1e9:.2f}B" if profile['mkt_cap'] else "N/A"
+    range_str = f"${profile['l52']:.2f} - ${profile['h52']:.2f}" if profile['h52'] else "N/A"
+    
+    st.markdown(f"""
+    <div class="profile-bar">
+        <div class="profile-item"><div class="profile-lbl">Market Cap</div><div class="profile-val">{mkt_cap_str}</div></div>
+        <div class="profile-item"><div class="profile-lbl">52-Wk Range</div><div class="profile-val">{range_str}</div></div>
+        <div class="profile-item"><div class="profile-lbl">Next Earnings</div><div class="profile-val" style="color:#ffc9c9;">{profile['next_earn']}</div></div>
+    </div>
+    """, unsafe_allow_html=True)
+    
     st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; AI 模式: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: <b>{ai_status}</b></div>", unsafe_allow_html=True)
     st.markdown(action_banner_html(act, reason, sub), unsafe_allow_html=True)
     
@@ -843,6 +873,7 @@ def show_live_dashboard():
         </div>
         """, unsafe_allow_html=True)
 
+        # 1. 意图 Box
         i_title, i_desc, i_color = get_mm_intent(btdr['price'], opt_data['max_pain'], opt_data['call_wall'], opt_data['put_wall'], opt_data['pcr'])
         st.markdown(f"""
         <div class="intent-box">
@@ -852,6 +883,7 @@ def show_live_dashboard():
         <div style="margin-bottom:8px;"></div>
         """, unsafe_allow_html=True)
 
+        # 2. 详细解读 Expander
         with st.expander("💡 它是如何工作的？(实战解读指南)"):
             st.markdown(f"""
             <div style='font-size: 0.85rem; color: #444; line-height: 1.6;'>
@@ -931,6 +963,7 @@ def show_live_dashboard():
     </div><div style="margin-bottom:10px;"></div>""", unsafe_allow_html=True)
     
     col_h, col_l = st.columns(2)
+    # FIX: Font color for prediction boxes is now dark for readability
     h_bg = "#e6fcf5" if btdr['price'] < p_high else "#0ca678"; h_txt = "#212529" 
     l_bg = "#fff5f5" if btdr['price'] > p_low else "#e03131"; l_txt = "#212529" 
     
@@ -991,7 +1024,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.17 DataFix | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.18 Command Center | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.17 DataFix")
+st.markdown("### ⚡ BTDR 领航员 v13.18 Command Center")
 show_live_dashboard()
