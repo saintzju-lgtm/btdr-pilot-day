@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.16 Legend", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.17 DataFix", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -19,10 +19,10 @@ CUSTOM_CSS = """
     .stApp { margin-top: -30px; background-color: #ffffff; }
     div[data-testid="stStatusWidget"] { visibility: hidden; }
     
-    /* Global Font Fix */
+    /* Global Font & Color Fix - High Contrast */
     .metric-card, .miner-card, .factor-box, .action-banner, .intent-box, .scen-card, .time-bar, .chart-legend {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
-        color: #212529;
+        color: #212529 !important; /* Force Dark Text */
     }
     
     div[data-testid="stAltairChart"] {
@@ -40,7 +40,7 @@ CUSTOM_CSS = """
     .metric-card.has-tooltip { cursor: help; }
     .metric-card.has-tooltip:hover { border-color: #ced4da; }
     
-    .metric-label { font-size: 0.75rem; color: #888; margin-bottom: 2px; }
+    .metric-label { font-size: 0.75rem; color: #666; margin-bottom: 2px; }
     .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
     .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
@@ -523,7 +523,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.16 Legend"
+        return final_model, factors, "v13.17 DataFix"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -572,6 +572,7 @@ def get_signal_recommendation(curr_price, factors, p_low):
         
     return action, " | ".join(reasons[:2]), sub_text, score, macd_hist, support_broken
 
+# --- FIX: ROBUST VOLUME FETCHING ---
 def get_realtime_data():
     tickers_list = "BTC-USD BTDR QQQ ^VIX " + " ".join(MINER_POOL)
     symbols = tickers_list.split()
@@ -579,13 +580,11 @@ def get_realtime_data():
         btdr_full = yf.Ticker("BTDR").history(period="6mo", interval="1d")
         btdr_full.index = btdr_full.index.tz_localize(None)
         
-        # --- NEW: Get Info for Short Interest ---
         try:
             btdr_info = yf.Ticker("BTDR").info
             short_float = btdr_info.get('shortPercentOfFloat', 0)
             if short_float is None: short_float = 0
         except: short_float = 0
-        # ----------------------------------------
         
         quotes = {}
         tz_ny = pytz.timezone('America/New_York'); now_ny = datetime.now(tz_ny); state_tag, state_css = determine_market_state(now_ny)
@@ -594,14 +593,32 @@ def get_realtime_data():
         for sym in symbols:
             try:
                 t = yf.Ticker(sym)
-                try: 
-                    price = t.fast_info['last_price']; prev = t.fast_info['previous_close']; vol = 0
+                
+                # --- FIX: Always fetch history for Volume ---
+                try:
+                    hist_day = t.history(period="1d")
+                    if not hist_day.empty:
+                        vol = hist_day['Volume'].iloc[-1]
+                        price_hist = hist_day['Close'].iloc[-1]
+                    else:
+                        vol = 0
+                        price_hist = 0
                 except:
-                    hist = t.history(period="2d")
-                    if not hist.empty:
-                        price = hist['Close'].iloc[-1]; prev = hist['Close'].iloc[-2] if len(hist)>1 else hist['Open'].iloc[-1]
-                        vol = hist['Volume'].iloc[-1]
-                    else: price = 0; prev = 1
+                    vol = 0
+                    price_hist = 0
+                
+                # --- Try Fast Info for Price ---
+                try: 
+                    price = t.fast_info['last_price']
+                    prev = t.fast_info['previous_close']
+                except:
+                    # Fallback to history if fast info fails
+                    price = price_hist
+                    prev = t.info.get('previousClose', price)
+                
+                # Zero Price Check
+                if price == 0 and price_hist > 0: price = price_hist
+                if prev == 0: prev = price
                 
                 pct = ((price - prev) / prev) * 100 if prev > 0 else 0
                 quotes[sym] = {"price": price, "pct": pct, "prev": prev, "open": price, "volume": vol, "tag": state_tag, "css": state_css, "is_open_today": True}
@@ -768,26 +785,21 @@ def show_live_dashboard():
     <div style="margin-bottom:15px;"></div>
     """, unsafe_allow_html=True)
     
-    # --- NEW: Liquidity & Sentiment (with Guide) ---
+    # --- Liquidity & Sentiment (with Guide) ---
     st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>🌊 流动性与情绪 (Liquidity & Sentiment)</div>", unsafe_allow_html=True)
     
-    # Calculate RVOL
     vol_avg_10 = btdr_hist['Volume'].tail(10).mean()
     rvol = btdr['volume'] / vol_avg_10 if vol_avg_10 > 0 else 0
     
     l1, l2, l3 = st.columns(3)
     
-    short_color = "color-up" if short_float > 0.15 else "color-neutral"
-    rvol_color = "color-up" if rvol > 1.5 else "color-neutral"
-    
     with l1: st.markdown(card_html("Short Interest", f"{short_float*100:.2f}%", "Squeeze?" if short_float>0.15 else "Normal", 1 if short_float>0.15 else 0), unsafe_allow_html=True)
     with l2: st.markdown(card_html("RVOL (量比)", f"{rvol:.2f}", "High Vol" if rvol>1.5 else "Low Vol", 1 if rvol>1.5 else 0), unsafe_allow_html=True)
     
-    shares_m = MINER_SHARES.get('BTDR', 100) # BTDR outstanding
+    shares_m = MINER_SHARES.get('BTDR', 100) 
     turnover = (btdr['volume'] / (shares_m * 1000000)) * 100
     with l3: st.markdown(card_html("换手率 (Turnover)", f"{turnover:.2f}%", None, 0), unsafe_allow_html=True)
     
-    # --- NEW: Sentiment Guide ---
     with st.expander("🌊 如何解读流动性与情绪？(Sentiment Guide)"):
         st.markdown("""
         <div style='font-size: 0.85rem; color: #444; line-height: 1.6;'>
@@ -831,7 +843,6 @@ def show_live_dashboard():
         </div>
         """, unsafe_allow_html=True)
 
-        # 1. 意图 Box
         i_title, i_desc, i_color = get_mm_intent(btdr['price'], opt_data['max_pain'], opt_data['call_wall'], opt_data['put_wall'], opt_data['pcr'])
         st.markdown(f"""
         <div class="intent-box">
@@ -841,7 +852,6 @@ def show_live_dashboard():
         <div style="margin-bottom:8px;"></div>
         """, unsafe_allow_html=True)
 
-        # 2. 详细解读 Expander
         with st.expander("💡 它是如何工作的？(实战解读指南)"):
             st.markdown(f"""
             <div style='font-size: 0.85rem; color: #444; line-height: 1.6;'>
@@ -859,8 +869,7 @@ def show_live_dashboard():
     elif live_price > 0:
          st.markdown("---")
          st.info("⚠️ 近期 (45天内) 期权数据不足，暂不展示误导信息。请关注正股走势。")
-    # --------------------------
-
+    
     st.markdown("---")
     st.markdown("### 📈 BTDR K-Line (Daily + BOLL)")
     if not btdr_hist.empty:
@@ -922,7 +931,6 @@ def show_live_dashboard():
     </div><div style="margin-bottom:10px;"></div>""", unsafe_allow_html=True)
     
     col_h, col_l = st.columns(2)
-    # FIX: Font color for prediction boxes is now dark for readability
     h_bg = "#e6fcf5" if btdr['price'] < p_high else "#0ca678"; h_txt = "#212529" 
     l_bg = "#fff5f5" if btdr['price'] > p_low else "#e03131"; l_txt = "#212529" 
     
@@ -983,7 +991,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.16 Legend | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.17 DataFix | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.16 Legend")
+st.markdown("### ⚡ BTDR 领航员 v13.17 DataFix")
 show_live_dashboard()
