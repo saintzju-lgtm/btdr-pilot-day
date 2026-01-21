@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.2 Scenario", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.3 Options", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -133,7 +133,7 @@ CUSTOM_CSS = """
     .bar-mom { background-color: #fa5252; transition: width 0.5s; }
     .bar-ai { background-color: #be4bdb; transition: width 0.5s; }
     
-    /* Scenario Card Styles (New) */
+    /* Scenario Card Styles */
     .scen-card {
         background: #fff; border: 1px solid #eee; border-radius: 8px;
         padding: 12px; text-align: left; height: 100%; min-height: 110px;
@@ -220,6 +220,44 @@ def calculate_hurst(series):
         return poly[0] * 2.0
     except: return 0.5
 
+@st.cache_data(ttl=600) # Options data cached for 10 mins to avoid lag
+def get_options_data(symbol, current_price):
+    try:
+        tk = yf.Ticker(symbol)
+        exps = tk.options
+        if not exps: return None
+        
+        nearest_date = exps[0]
+        chain = tk.option_chain(nearest_date)
+        calls = chain.calls
+        puts = chain.puts
+        
+        # PCR
+        total_call_vol = calls['volume'].sum() if not calls.empty else 1
+        total_put_vol = puts['volume'].sum() if not puts.empty else 0
+        pcr_vol = total_put_vol / total_call_vol
+        
+        # Max Pain
+        strikes = set(calls['strike']).union(set(puts['strike']))
+        min_loss = float('inf'); max_pain = 0
+        
+        for k in strikes:
+            call_loss = calls[calls['strike'] < k].apply(lambda x: (k - x['strike']) * x['openInterest'], axis=1).sum() if not calls.empty else 0
+            put_loss = puts[puts['strike'] > k].apply(lambda x: (x['strike'] - k) * x['openInterest'], axis=1).sum() if not puts.empty else 0
+            total_loss = call_loss + put_loss
+            if total_loss < min_loss: min_loss = total_loss; max_pain = k
+                
+        # Walls
+        call_wall = calls.loc[calls['openInterest'].idxmax()]['strike'] if not calls.empty else 0
+        put_wall = puts.loc[puts['openInterest'].idxmax()]['strike'] if not puts.empty else 0
+
+        return {
+            "expiry": nearest_date, "pcr": pcr_vol, "max_pain": max_pain,
+            "call_wall": call_wall, "put_wall": put_wall,
+            "call_vol": total_call_vol, "put_vol": total_put_vol
+        }
+    except Exception as e: return None
+
 @st.cache_data(ttl=300)
 def run_grandmaster_analytics(live_price=None):
     default_model = {
@@ -240,26 +278,19 @@ def run_grandmaster_analytics(live_price=None):
         idx = btdr.index.intersection(btc.index).intersection(qqq.index)
         btdr, btc, qqq = btdr.loc[idx], btc.loc[idx], qqq.loc[idx]
         
-        # --- 关键步骤：数据清洗 (Remove Timezone) ---
+        # Data Cleaning
         btdr.index = btdr.index.tz_localize(None)
         
-        # --- 关键步骤：注入实时数据 (Reconstruction) ---
+        # Real-time Injection
         if live_price and live_price > 0:
-            last_date = btdr.index[-1].date()
-            today = datetime.now().date()
-            
-            # 构造新的一行数据
+            last_date = btdr.index[-1].date(); today = datetime.now().date()
             last_row = btdr.iloc[-1].copy()
             last_row['Close'] = live_price
             last_row['High'] = max(last_row['High'], live_price)
             last_row['Low'] = min(last_row['Low'], live_price)
-            # Volume 保持不变，避免 0 值影响计算
             
-            if last_date == today:
-                # Update today's candle
-                btdr.iloc[-1] = last_row
+            if last_date == today: btdr.iloc[-1] = last_row
             else:
-                # Append new candle for today
                 new_idx = btdr.index[-1] + timedelta(days=1)
                 new_df = pd.DataFrame([last_row], index=[new_idx])
                 btdr = pd.concat([btdr, new_df])
@@ -289,8 +320,6 @@ def run_grandmaster_analytics(live_price=None):
 
         # Technicals
         close = btdr['Close']
-        
-        # VWAP
         pv = (close * btdr['Volume'])
         vol_sum = btdr['Volume'].tail(30).sum()
         vwap_30d = pv.tail(30).sum() / vol_sum if vol_sum > 0 else btdr['Close'].mean()
@@ -299,20 +328,14 @@ def run_grandmaster_analytics(live_price=None):
         tr = np.maximum(high - low, np.abs(high - close.shift(1)))
         atr = tr.rolling(14).mean()
         
-        # MACD
         exp12 = close.ewm(span=12, adjust=False).mean()
         exp26 = close.ewm(span=26, adjust=False).mean()
         macd = exp12 - exp26
         signal = macd.ewm(span=9, adjust=False).mean()
         
-        # BOLL
-        sma20 = close.rolling(window=20).mean()
-        std20 = close.rolling(window=20).std()
-        boll_u = sma20 + (std20 * 2)
-        boll_l = sma20 - (std20 * 2)
-        boll_m = sma20 # Median
+        sma20 = close.rolling(window=20).mean(); std20 = close.rolling(window=20).std()
+        boll_u = sma20 + (std20 * 2); boll_l = sma20 - (std20 * 2); boll_m = sma20
         
-        # ADX
         up, down = high.diff(), -low.diff()
         plus_dm = np.where((up > down) & (up > 0), up, 0); minus_dm = np.where((down > up) & (down > 0), down, 0)
         atr_s = pd.Series(atr.values, index=btdr.index)
@@ -321,7 +344,6 @@ def run_grandmaster_analytics(live_price=None):
         dx = 100 * np.abs(plus_di - minus_di) / (plus_di + minus_di)
         adx = dx.rolling(14).mean().iloc[-1]; adx = 20 if np.isnan(adx) else adx
         
-        # RSI
         delta_p = close.diff()
         gain = delta_p.where(delta_p > 0, 0).rolling(14).mean(); loss = -delta_p.where(delta_p < 0, 0).rolling(14).mean()
         rs = gain / loss; rsi = 100 - (100 / (1 + rs)).iloc[-1]
@@ -329,18 +351,12 @@ def run_grandmaster_analytics(live_price=None):
         vol_base = ret_btdr.std()
         if len(ret_btdr) > 20: vol_base = pd.Series(ret_btdr).ewm(span=20).std().iloc[-1]
         atr_ratio = (atr / close).iloc[-1]
-
         hurst = calculate_hurst(btdr['Close'].values[-50:])
-        
         regime = "Trend" if adx > 25 else ("MeanRev" if hurst < 0.4 else "Chop")
 
-        # --- 修复：NaN 熔断保护 (防止 $0.00 挂单) ---
         last_close = close.iloc[-1]
-        bu_val = boll_u.iloc[-1] 
-        bl_val = boll_l.iloc[-1]
-        bm_val = boll_m.iloc[-1]
+        bu_val = boll_u.iloc[-1]; bl_val = boll_l.iloc[-1]; bm_val = boll_m.iloc[-1]
         
-        # 强制兜底
         if np.isnan(bu_val) or bu_val <= 0: bu_val = last_close * 1.10
         if np.isnan(bl_val) or bl_val <= 0: bl_val = last_close * 0.90
         if np.isnan(bm_val) or bm_val <= 0: bm_val = last_close
@@ -353,16 +369,14 @@ def run_grandmaster_analytics(live_price=None):
             "boll_u": bu_val, "boll_l": bl_val, "boll_m": bm_val
         }
 
-        # WLS Regression (Revert to historical only for training)
         if live_price: btdr = btdr.iloc[:-1]
-        
         df_reg = pd.DataFrame()
         df_reg['Target_High'] = (btdr['High'] - btdr['Close'].shift(1)) / btdr['Close'].shift(1)
         df_reg['Target_Low'] = (btdr['Low'] - btdr['Close'].shift(1)) / btdr['Close'].shift(1)
         df_reg = df_reg.dropna().tail(60)
         
         final_model = {
-            "high": {"intercept": 0, "beta_gap": 0.5, "beta_btc": 0.5, "beta_vol": 0}, # Placeholder for stability
+            "high": {"intercept": 0, "beta_gap": 0.5, "beta_btc": 0.5, "beta_vol": 0},
             "low": {"intercept": 0, "beta_gap": 0.5, "beta_btc": 0.5, "beta_vol": 0},
             "ensemble_hist_h": df_reg['Target_High'].tail(10).mean(), 
             "ensemble_hist_l": df_reg['Target_Low'].tail(10).mean(),
@@ -370,7 +384,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.1 Final"
+        return final_model, factors, "v13.3 Options"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -385,11 +399,6 @@ def determine_market_state(now_ny):
     if 960 <= curr_min < 1200: return "Post-Mkt", "dot-post"
     return "Overnight", "dot-night"
 
-def get_ai_weights(regime, rsi, volatility_state):
-    if regime == "Trend": return 0.20, 0.05, 0.35, 0.40
-    elif regime == "MeanRev": return 0.35, 0.35, 0.10, 0.20
-    else: return 0.25, 0.15, 0.10, 0.50
-
 def get_signal_recommendation(curr_price, factors, p_low):
     score = 0; reasons = []
     
@@ -398,7 +407,6 @@ def get_signal_recommendation(curr_price, factors, p_low):
     elif rsi > 70: score -= 2; reasons.append("RSI超买")
     elif rsi > 55: score += 0.5 
     
-    # Secure BOLL Calc
     range_boll = factors['boll_u'] - factors['boll_l']
     if range_boll <= 0: range_boll = curr_price * 0.05 
     
@@ -429,39 +437,29 @@ def get_realtime_data():
     tickers_list = "BTC-USD BTDR QQQ ^VIX " + " ".join(MINER_POOL)
     symbols = tickers_list.split()
     try:
-        # Separate fetch for BTDR historical chart
         btdr_full = yf.Ticker("BTDR").history(period="6mo", interval="1d")
-        btdr_full.index = btdr_full.index.tz_localize(None) # Clean TZ
+        btdr_full.index = btdr_full.index.tz_localize(None)
         
-        # Lightweight quote fetch
         quotes = {}
         tz_ny = pytz.timezone('America/New_York'); now_ny = datetime.now(tz_ny); state_tag, state_css = determine_market_state(now_ny)
         live_volatility = 0.01 
 
-        # Using Ticker to get latest price more reliably for BTDR
         for sym in symbols:
             try:
                 t = yf.Ticker(sym)
-                # Try fast info first
                 try: 
-                    price = t.fast_info['last_price']
-                    prev = t.fast_info['previous_close']
-                    vol = 0
+                    price = t.fast_info['last_price']; prev = t.fast_info['previous_close']; vol = 0
                 except:
-                    # Fallback to history (1d)
                     hist = t.history(period="2d")
                     if not hist.empty:
-                        price = hist['Close'].iloc[-1]
-                        prev = hist['Close'].iloc[-2] if len(hist)>1 else hist['Open'].iloc[-1]
+                        price = hist['Close'].iloc[-1]; prev = hist['Close'].iloc[-2] if len(hist)>1 else hist['Open'].iloc[-1]
                         vol = hist['Volume'].iloc[-1]
-                    else:
-                        price = 0; prev = 1
+                    else: price = 0; prev = 1
                 
                 pct = ((price - prev) / prev) * 100 if prev > 0 else 0
                 quotes[sym] = {"price": price, "pct": pct, "prev": prev, "open": price, "volume": vol, "tag": state_tag, "css": state_css, "is_open_today": True}
                 
                 if sym == 'BTDR':
-                    # Calc volatility from full history
                     live_volatility = btdr_full['Close'].pct_change().std()
                     if np.isnan(live_volatility): live_volatility = 0.05
 
@@ -474,40 +472,31 @@ def get_realtime_data():
         return quotes, fng, live_volatility, btdr_full
     except: return None, 50, 0.01, pd.DataFrame()
 
-# --- 6. 绘图函数 (Red=Up, Green=Down) ---
+# --- 6. 绘图函数 ---
 def draw_kline_chart(df, live_price):
     if df.empty: return alt.Chart(pd.DataFrame()).mark_text().encode(text=alt.value("No Data")), ""
     
-    # 1. 注入实时数据 (再次清洗确保万无一失)
     df = df.copy()
     if live_price > 0:
-        last_idx = df.index[-1]
-        today = datetime.now().date()
-        
+        last_idx = df.index[-1]; today = datetime.now().date()
         last_row = df.iloc[-1].to_dict()
         last_row['Close'] = live_price
         last_row['High'] = max(last_row['High'], live_price)
         last_row['Low'] = min(last_row['Low'], live_price)
         
-        if last_idx.date() == today:
-            # Update
-            df.iloc[-1] = pd.Series(last_row)
+        if last_idx.date() == today: df.iloc[-1] = pd.Series(last_row)
         else:
-            # Append
             new_idx = last_idx + timedelta(days=1)
             new_df = pd.DataFrame([last_row], index=[new_idx])
             df = pd.concat([df, new_df])
 
-    # 2. 计算指标
     df['MA5'] = df['Close'].rolling(window=5).mean()
     df['BOLL_MID'] = df['Close'].rolling(window=20).mean()
     df['STD20'] = df['Close'].rolling(window=20).std()
     df['BOLL_U'] = df['BOLL_MID'] + 2 * df['STD20']
     df['BOLL_L'] = df['BOLL_MID'] - 2 * df['STD20']
     
-    # 3. Legend
     last = df.iloc[-1]
-    # Handle NaNs
     m5 = last['MA5'] if not np.isnan(last['MA5']) else live_price
     b_mid = last['BOLL_MID'] if not np.isnan(last['BOLL_MID']) else live_price
     b_up = last['BOLL_U'] if not np.isnan(last['BOLL_U']) else live_price * 1.1
@@ -522,27 +511,19 @@ def draw_kline_chart(df, live_price):
     </div>
     """
 
-    # 4. Altair
     df = df.tail(80).reset_index()
     df.columns = ['T'] + list(df.columns[1:])
     
     base = alt.Chart(df).encode(x=alt.X('T:T', axis=alt.Axis(format='%m/%d', title=None)))
-    
     rule = base.mark_rule().encode(y=alt.Y('Low:Q', scale=alt.Scale(zero=False)), y2='High:Q')
-    bar = base.mark_bar(width=6).encode(
-        y='Open:Q', y2='Close:Q',
-        color=alt.condition("datum.Close >= datum.Open", alt.value("#e03131"), alt.value("#0ca678"))
-    )
+    bar = base.mark_bar(width=6).encode(y='Open:Q', y2='Close:Q', color=alt.condition("datum.Close >= datum.Open", alt.value("#e03131"), alt.value("#0ca678")))
     
     line_5 = base.mark_line(color='#228be6', size=1.5).encode(y='MA5:Q')
     line_mid = base.mark_line(color='#f59f00', size=1.5).encode(y='BOLL_MID:Q') 
     line_bu = base.mark_line(color='#adb5bd', strokeDash=[4,2], size=1).encode(y='BOLL_U:Q')
     line_bl = base.mark_line(color='#adb5bd', strokeDash=[4,2], size=1).encode(y='BOLL_L:Q')
     
-    vol = base.mark_bar(opacity=0.3).encode(
-        y=alt.Y('Volume:Q', axis=alt.Axis(title='Vol', labels=False, ticks=False)),
-        color=alt.condition("datum.Close >= datum.Open", alt.value("#e03131"), alt.value("#0ca678"))
-    ).properties(height=60)
+    vol = base.mark_bar(opacity=0.3).encode(y=alt.Y('Volume:Q', axis=alt.Axis(title='Vol', labels=False, ticks=False)), color=alt.condition("datum.Close >= datum.Open", alt.value("#e03131"), alt.value("#0ca678"))).properties(height=60)
     
     chart = (rule + bar + line_5 + line_mid + line_bu + line_bl).properties(height=240)
     final_chart = alt.vconcat(chart, vol).resolve_scale(x='shared').interactive()
@@ -552,32 +533,30 @@ def draw_kline_chart(df, live_price):
 # --- 7. 仪表盘展示 ---
 @st.fragment(run_every=15)
 def show_live_dashboard():
-    # 1. 变量初始化 (CRITICAL: PREVENT NAME_ERROR)
     tz_ny = pytz.timezone('America/New_York')
     now_ny = datetime.now(tz_ny).strftime('%H:%M:%S')
     badge_class = "badge-ai"
     ai_status = "Init"
     act, reason, sub = "WAIT", "Initializing...", "Please wait"
     
-    # 2. 获取数据
     quotes, fng_val, live_vol_btdr, btdr_hist = get_realtime_data()
     live_price = quotes.get('BTDR', {}).get('price', 0)
     
-    # 数据源检查
     if live_price <= 0:
         st.warning("⚠️ 市场数据暂不可用 (Market Data Unavailable)")
         time.sleep(3)
         st.rerun()
         return
 
-    # 3. 运行模型
     ai_model, factors, ai_status = run_grandmaster_analytics(live_price)
+    
+    # 异步获取期权数据
+    opt_data = get_options_data('BTDR', live_price)
+    
     regime_tag = factors['regime']
-
     btc = quotes.get('BTC-USD', {'pct': 0, 'price': 0}); qqq = quotes.get('QQQ', {'pct': 0})
-    vix = quotes.get('^VIX', {'price': 20, 'pct': 0}); btdr = quotes.get('BTDR', {'price': 0})
+    btdr = quotes.get('BTDR', {'price': 0})
 
-    # VWAP Display Logic
     vwap_val = factors['vwap']
     if vwap_val == 0 or np.isnan(vwap_val): vwap_val = btdr['price']
     dist_vwap = ((btdr['price'] - vwap_val) / vwap_val) * 100
@@ -585,32 +564,18 @@ def show_live_dashboard():
     drift_est = (btc['pct']/100 * factors['beta_btc'] * 0.4) + (qqq['pct']/100 * factors['beta_qqq'] * 0.4)
     if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
     
-    # Model Calculation
-    # Historical mean returns from model
-    hist_h = ai_model['ensemble_hist_h']
-    hist_l = ai_model['ensemble_hist_l']
-    
-    # Simple projections
+    hist_h = ai_model['ensemble_hist_h']; hist_l = ai_model['ensemble_hist_l']
     p_high = btdr['price'] * (1 + hist_h + live_vol_btdr)
     p_low = btdr['price'] * (1 + hist_l - live_vol_btdr)
 
     act, reason, sub, score, macd_h, support_broken = get_signal_recommendation(btdr['price'], factors, p_low)
 
-    # Buy Limit Logic (Logic kept for Scenario calcs)
     curr_p = btdr['price']; atr_buffer = live_vol_btdr * 0.6
-    
     if support_broken:
-        next_support = factors['boll_l']
-        if np.isnan(next_support) or next_support <= 0.1: buy_entry = curr_p * 0.95
-        elif curr_p < next_support: buy_entry = curr_p * 0.98
-        else: buy_entry = next_support
         support_label_color = "#e03131"; support_label_text = f"${p_low:.2f} (Broken)"
     else:
-        buy_entry = p_low + atr_buffer
         support_label_color = "#ffffff"; support_label_text = f"${p_low:.2f}"
 
-    if buy_entry <= 0: buy_entry = curr_p * 0.95
-    
     # --- UI Rendering ---
     st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; AI 模式: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: <b>{ai_status}</b></div>", unsafe_allow_html=True)
     st.markdown(action_banner_html(act, reason, sub), unsafe_allow_html=True)
@@ -629,9 +594,36 @@ def show_live_dashboard():
         shares_m = MINER_SHARES.get(p, 200)
         turnover_rate = (data['volume'] / (shares_m * 1000000)) * 100
         cols[i].markdown(miner_card_html(p, data['price'], data['pct'], turnover_rate), unsafe_allow_html=True)
-            
-    st.markdown("---")
     
+    # --- NEW: OPTIONS RADAR ---
+    if opt_data:
+        st.markdown("---")
+        st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>📡 期权雷达 (Options Flow)</div>", unsafe_allow_html=True)
+        
+        pcr_color = "color-down" if opt_data['pcr'] > 1.0 else "color-up"
+        mp_delta = opt_data['max_pain'] - btdr['price']
+        
+        op1, op2, op3, op4 = st.columns(4)
+        with op1: st.markdown(card_html("最近到期日", f"{opt_data['expiry']}", None, 0, "Next Exp"), unsafe_allow_html=True)
+        with op2: st.markdown(card_html("最大痛点 (Max Pain)", f"${opt_data['max_pain']:.1f}", f"Gap: {mp_delta:+.2f}", mp_delta, tooltip_text="期权卖方亏损最小的价格。"), unsafe_allow_html=True)
+        with op3: 
+            sentiment = "Bearish" if opt_data['pcr'] > 0.8 else ("Bullish" if opt_data['pcr'] < 0.5 else "Neutral")
+            st.markdown(card_html("P/C Ratio (Vol)", f"{opt_data['pcr']:.2f}", sentiment, -1 if sentiment=="Bearish" else 1), unsafe_allow_html=True)
+        with op4: st.markdown(card_html("期权墙 (OI Wall)", f"${opt_data['call_wall']:.1f}", f"Sup: ${opt_data['put_wall']:.1f}", 0, tooltip_text="最大Call/Put持仓分布。"), unsafe_allow_html=True)
+
+        total_vol = opt_data['call_vol'] + opt_data['put_vol']
+        call_pct = (opt_data['call_vol'] / total_vol) * 100 if total_vol > 0 else 50
+        st.markdown(f"""
+        <div style="display:flex; justify-content:space-between; font-size:0.7rem; color:#666; margin-bottom:2px;">
+            <span>🐂 Call Vol: {opt_data['call_vol']} ({call_pct:.0f}%)</span><span>🐻 Put Vol: {opt_data['put_vol']} ({100-call_pct:.0f}%)</span>
+        </div>
+        <div style="width:100%; height:6px; background:#f03e3e; border-radius:3px; overflow:hidden;">
+            <div style="width:{call_pct}%; height:100%; background:#2f9e44;"></div>
+        </div>
+        """, unsafe_allow_html=True)
+    # --------------------------
+
+    st.markdown("---")
     st.markdown("### 📈 BTDR K-Line (Daily + BOLL)")
     if not btdr_hist.empty:
         chart_k, legend_html = draw_kline_chart(btdr_hist, btdr['price'])
@@ -648,12 +640,10 @@ def show_live_dashboard():
     with c4: st.markdown(card_html(open_label, f"${btdr['open']:.2f}", None, 0, open_extra), unsafe_allow_html=True)
     with c5: st.markdown(card_html("机构成本 (VWAP)", f"${vwap_val:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
-    # --- SCENARIO ANALYSIS MODULE (REPLACED TICKETS) ---
     st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>🎯 情景推演 (Scenario Analysis)</div>", unsafe_allow_html=True)
     
     sc1, sc2, sc3 = st.columns(3)
     
-    # Bull Case Logic
     bull_target = p_high * (1 + live_vol_btdr)
     bull_prob = "Low" if score < 0 else "Med"
     with sc1:
@@ -665,7 +655,6 @@ def show_live_dashboard():
         </div>
         """, unsafe_allow_html=True)
 
-    # Base Case Logic
     with sc2:
         st.markdown(f"""
         <div class="scen-card scen-base">
@@ -675,7 +664,6 @@ def show_live_dashboard():
         </div>
         """, unsafe_allow_html=True)
 
-    # Bear Case Logic
     bear_target = p_low * (1 - live_vol_btdr)
     bear_prob = "High" if score < -2 else "Low"
     with sc3:
@@ -686,7 +674,6 @@ def show_live_dashboard():
             <div class="scen-desc">若跌破支撑位 <b>${p_low:.2f}</b>，止损盘触发寻找新低。</div>
         </div>
         """, unsafe_allow_html=True)
-    # ---------------------------------------------------
 
     st.markdown(f"""
     <div style="font-size:0.7rem; color:#888; margin-top:10px; margin-bottom:2px; display:flex; justify-content:space-between;">
@@ -757,7 +744,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.1 Final | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.3 Options | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.2 Scenario")
+st.markdown("### ⚡ BTDR 领航员 v13.3 Options")
 show_live_dashboard()
