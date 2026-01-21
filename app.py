@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.14 Perfected", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.15 Ultimate", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -19,7 +19,7 @@ CUSTOM_CSS = """
     .stApp { margin-top: -30px; background-color: #ffffff; }
     div[data-testid="stStatusWidget"] { visibility: hidden; }
     
-    /* --- FIX: 移除全局样式，仅对自定义卡片应用字体，解决图标乱码问题 --- */
+    /* Global Font Fix */
     .metric-card, .miner-card, .factor-box, .action-banner, .intent-box, .scen-card, .time-bar, .chart-legend {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
         color: #212529;
@@ -165,6 +165,14 @@ CUSTOM_CSS = """
     .tag-bear { color: #c92a2a; background: #fff5f5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
     .tag-neu { color: #666; background: #f1f3f5; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
     .tag-macro { color: #f76707; background: #fff4e6; padding: 2px 6px; border-radius: 4px; font-size: 0.7rem; }
+    
+    .streamlit-expanderHeader {
+        font-size: 0.8rem !important;
+        color: #555 !important;
+        background-color: #f8f9fa !important;
+        border-radius: 6px !important;
+        border: 1px solid #eee !important;
+    }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -328,9 +336,6 @@ def get_mining_metrics(btc_price):
         else:
             difficulty = 80000000000000 
             
-        # Simplified Hashprice Estimation (Proxy for $/PH/Day)
-        # Based on current network constants (Block reward 3.125)
-        # 1 PH/s revenue in BTC = (1e15 * 86400 * 3.125) / (Difficulty * 2^32)
         btc_per_ph_day = (1e15 * 86400 * 3.125) / (difficulty * 4294967296)
         hashprice_real = btc_per_ph_day * btc_price
         
@@ -339,7 +344,6 @@ def get_mining_metrics(btc_price):
         return 0, 0
 
 def get_macro_insight(hashprice, beta):
-    # Hashprice Logic
     if hashprice < 40:
         hp_tag = "🥶 极寒 (Survival)"
         hp_desc = "矿工收入极低，仅顶级算力盈利。"
@@ -350,7 +354,6 @@ def get_macro_insight(hashprice, beta):
         hp_tag = "😐 平衡 (Balanced)"
         hp_desc = "收入处于平均水平。"
 
-    # Beta Logic
     if beta > 1.5:
         beta_tag = "🎰 强杠杆"
         beta_desc = "股价弹性极高，适合博弈BTC突破。"
@@ -520,7 +523,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.14 Perfected"
+        return final_model, factors, "v13.15 Ultimate"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -576,6 +579,14 @@ def get_realtime_data():
         btdr_full = yf.Ticker("BTDR").history(period="6mo", interval="1d")
         btdr_full.index = btdr_full.index.tz_localize(None)
         
+        # --- NEW: Get Info for Short Interest ---
+        try:
+            btdr_info = yf.Ticker("BTDR").info
+            short_float = btdr_info.get('shortPercentOfFloat', 0)
+            if short_float is None: short_float = 0
+        except: short_float = 0
+        # ----------------------------------------
+        
         quotes = {}
         tz_ny = pytz.timezone('America/New_York'); now_ny = datetime.now(tz_ny); state_tag, state_css = determine_market_state(now_ny)
         live_volatility = 0.01 
@@ -605,8 +616,8 @@ def get_realtime_data():
         try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1.0).json()['data'][0]['value'])
         except: fng = 50
         
-        return quotes, fng, live_volatility, btdr_full
-    except: return None, 50, 0.01, pd.DataFrame()
+        return quotes, fng, live_volatility, btdr_full, short_float
+    except: return None, 50, 0.01, pd.DataFrame(), 0
 
 # --- 6. 绘图函数 ---
 def draw_kline_chart(df, live_price):
@@ -675,7 +686,7 @@ def show_live_dashboard():
     ai_status = "Init"
     act, reason, sub = "WAIT", "Initializing...", "Please wait"
     
-    quotes, fng_val, live_vol_btdr, btdr_hist = get_realtime_data()
+    quotes, fng_val, live_vol_btdr, btdr_hist, short_float = get_realtime_data()
     live_price = quotes.get('BTDR', {}).get('price', 0)
     
     if live_price <= 0:
@@ -748,7 +759,7 @@ def show_live_dashboard():
     with m2: st.markdown(card_html("挖矿收益 (Hashprice)", hash_str, "PH/Day", 1, "Est"), unsafe_allow_html=True)
     with m3: st.markdown(card_html("Beta vs BTC", f"{beta_val:.2f}", "High Beta" if beta_val>1.5 else "Low Beta", 1 if beta_val>1 else -1, "30d Kalman"), unsafe_allow_html=True)
     
-    # NEW: Macro Insight Box
+    # Macro Insight Box
     macro_t, macro_d = get_macro_insight(hashprice, beta_val)
     st.markdown(f"""
     <div class="intent-box" style="border-left-color: #f76707;">
@@ -757,11 +768,30 @@ def show_live_dashboard():
     </div>
     <div style="margin-bottom:15px;"></div>
     """, unsafe_allow_html=True)
-    # -------------------
+    
+    # --- NEW: Liquidity & Sentiment (v13.15 Feature) ---
+    st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>🌊 流动性与情绪 (Liquidity & Sentiment)</div>", unsafe_allow_html=True)
+    
+    # Calculate RVOL
+    vol_avg_10 = btdr_hist['Volume'].tail(10).mean()
+    rvol = btdr['volume'] / vol_avg_10 if vol_avg_10 > 0 else 0
+    
+    l1, l2, l3 = st.columns(3)
+    
+    short_color = "color-up" if short_float > 0.15 else "color-neutral"
+    rvol_color = "color-up" if rvol > 1.5 else "color-neutral"
+    
+    with l1: st.markdown(card_html("Short Interest", f"{short_float*100:.2f}%", "Squeeze?" if short_float>0.15 else "Normal", 1 if short_float>0.15 else 0), unsafe_allow_html=True)
+    with l2: st.markdown(card_html("RVOL (量比)", f"{rvol:.2f}", "High Vol" if rvol>1.5 else "Low Vol", 1 if rvol>1.5 else 0), unsafe_allow_html=True)
+    
+    shares_m = MINER_SHARES.get('BTDR', 100) # BTDR outstanding
+    turnover = (btdr['volume'] / (shares_m * 1000000)) * 100
+    with l3: st.markdown(card_html("换手率 (Turnover)", f"{turnover:.2f}%", None, 0), unsafe_allow_html=True)
+    
+    st.markdown("---")
     
     # --- OPTIONS RADAR + INTENT + EXPANDER ---
     if opt_data:
-        st.markdown("---")
         st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>📡 期权雷达 (Real-Time Aggregate)</div>", unsafe_allow_html=True)
         
         pcr_color = "color-down" if opt_data['pcr'] > 1.0 else "color-up"
@@ -877,8 +907,9 @@ def show_live_dashboard():
     </div><div style="margin-bottom:10px;"></div>""", unsafe_allow_html=True)
     
     col_h, col_l = st.columns(2)
-    h_bg = "#e6fcf5" if btdr['price'] < p_high else "#0ca678"; h_txt = "#087f5b" if btdr['price'] < p_high else "#ffffff"
-    l_bg = "#fff5f5" if btdr['price'] > p_low else "#e03131"; l_txt = support_label_color
+    # FIX: Font color for prediction boxes is now dark for readability
+    h_bg = "#e6fcf5" if btdr['price'] < p_high else "#0ca678"; h_txt = "#212529" 
+    l_bg = "#fff5f5" if btdr['price'] > p_low else "#e03131"; l_txt = "#212529" 
     
     with col_h: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {h_bg}; color: {h_txt}; border: 1px solid #c3fae8;"><div style="font-size: 0.8rem; opacity: 0.8;">理论阻力 (High)</div><div style="font-size: 1.5rem; font-weight: bold;">${p_high:.2f}</div></div></div>""", unsafe_allow_html=True)
     with col_l: st.markdown(f"""<div class="pred-container-wrapper"><div class="pred-box" style="background-color: {l_bg}; color: {l_txt}; border: 1px solid #ffc9c9;"><div style="font-size: 0.8rem; opacity: 0.8;">理论支撑 (Low)</div><div style="font-size: 1.5rem; font-weight: bold;">{support_label_text}</div></div></div>""", unsafe_allow_html=True)
@@ -937,7 +968,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.14 Perfected | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.15 Ultimate | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.14 Perfected")
+st.markdown("### ⚡ BTDR 领航员 v13.15 Ultimate")
 show_live_dashboard()
