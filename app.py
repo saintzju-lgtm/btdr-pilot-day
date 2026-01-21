@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.3 Options", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.4 Fixed", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -220,7 +220,7 @@ def calculate_hurst(series):
         return poly[0] * 2.0
     except: return 0.5
 
-@st.cache_data(ttl=600) # Options data cached for 10 mins to avoid lag
+@st.cache_data(ttl=600) # Options data cached for 10 mins
 def get_options_data(symbol, current_price):
     try:
         tk = yf.Ticker(symbol)
@@ -232,31 +232,57 @@ def get_options_data(symbol, current_price):
         calls = chain.calls
         puts = chain.puts
         
-        # PCR
+        if calls.empty or puts.empty: return None
+
+        # --- 关键修正：数据清洗 (Filter) ---
+        # 只关注现价上下 60% 范围内的行权价，过滤掉 $2.0 这种深实值噪音
+        # 如果现价 $14, 则范围约 $5.6 - $22.4，去除了 $2.0 的干扰
+        lower_bound = current_price * 0.4
+        upper_bound = current_price * 1.6
+        
+        calls_clean = calls[(calls['strike'] >= lower_bound) & (calls['strike'] <= upper_bound)]
+        puts_clean = puts[(puts['strike'] >= lower_bound) & (puts['strike'] <= upper_bound)]
+        
+        # 兜底：如果清洗后没数据，回退使用原始数据
+        if calls_clean.empty: calls_clean = calls
+        if puts_clean.empty: puts_clean = puts
+        # ----------------------------------
+        
+        # PCR (使用总量反映整体情绪)
         total_call_vol = calls['volume'].sum() if not calls.empty else 1
         total_put_vol = puts['volume'].sum() if not puts.empty else 0
         pcr_vol = total_put_vol / total_call_vol
         
-        # Max Pain
-        strikes = set(calls['strike']).union(set(puts['strike']))
-        min_loss = float('inf'); max_pain = 0
+        # Max Pain (使用清洗后的数据)
+        strikes = set(calls_clean['strike']).union(set(puts_clean['strike']))
+        min_loss = float('inf'); max_pain = current_price
         
-        for k in strikes:
-            call_loss = calls[calls['strike'] < k].apply(lambda x: (k - x['strike']) * x['openInterest'], axis=1).sum() if not calls.empty else 0
-            put_loss = puts[puts['strike'] > k].apply(lambda x: (x['strike'] - k) * x['openInterest'], axis=1).sum() if not puts.empty else 0
-            total_loss = call_loss + put_loss
-            if total_loss < min_loss: min_loss = total_loss; max_pain = k
-                
-        # Walls
-        call_wall = calls.loc[calls['openInterest'].idxmax()]['strike'] if not calls.empty else 0
-        put_wall = puts.loc[puts['openInterest'].idxmax()]['strike'] if not puts.empty else 0
+        if strikes:
+            for k in strikes:
+                # 简化计算：只计算核心区域痛点
+                call_loss = calls_clean[calls_clean['strike'] < k].apply(lambda x: (k - x['strike']) * x['openInterest'], axis=1).sum()
+                put_loss = puts_clean[puts_clean['strike'] > k].apply(lambda x: (x['strike'] - k) * x['openInterest'], axis=1).sum()
+                total_loss = call_loss + put_loss
+                if total_loss < min_loss: 
+                    min_loss = total_loss; max_pain = k
+        
+        # Walls (使用清洗后的数据)
+        if not calls_clean.empty:
+            call_wall = calls_clean.loc[calls_clean['openInterest'].idxmax()]['strike']
+        else: call_wall = current_price * 1.1 # Fallback
+            
+        if not puts_clean.empty:
+            put_wall = puts_clean.loc[puts_clean['openInterest'].idxmax()]['strike']
+        else: put_wall = current_price * 0.9 # Fallback
 
         return {
             "expiry": nearest_date, "pcr": pcr_vol, "max_pain": max_pain,
             "call_wall": call_wall, "put_wall": put_wall,
             "call_vol": total_call_vol, "put_vol": total_put_vol
         }
-    except Exception as e: return None
+    except Exception as e:
+        print(f"Options Error: {e}")
+        return None
 
 @st.cache_data(ttl=300)
 def run_grandmaster_analytics(live_price=None):
@@ -384,7 +410,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.3 Options"
+        return final_model, factors, "v13.4 Fixed"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -550,7 +576,7 @@ def show_live_dashboard():
 
     ai_model, factors, ai_status = run_grandmaster_analytics(live_price)
     
-    # 异步获取期权数据
+    # 异步获取期权数据 (Fix included)
     opt_data = get_options_data('BTDR', live_price)
     
     regime_tag = factors['regime']
@@ -595,7 +621,7 @@ def show_live_dashboard():
         turnover_rate = (data['volume'] / (shares_m * 1000000)) * 100
         cols[i].markdown(miner_card_html(p, data['price'], data['pct'], turnover_rate), unsafe_allow_html=True)
     
-    # --- NEW: OPTIONS RADAR ---
+    # --- OPTIONS RADAR (UI UNCHANGED, LOGIC FIXED) ---
     if opt_data:
         st.markdown("---")
         st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>📡 期权雷达 (Options Flow)</div>", unsafe_allow_html=True)
@@ -744,7 +770,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.3 Options | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.4 Fixed | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.3 Options")
+st.markdown("### ⚡ BTDR 领航员 v13.4 Fixed")
 show_live_dashboard()
