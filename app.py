@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.4 Fixed", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.5 Fix", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -220,63 +220,91 @@ def calculate_hurst(series):
         return poly[0] * 2.0
     except: return 0.5
 
-@st.cache_data(ttl=600) # Options data cached for 10 mins
+@st.cache_data(ttl=600)
 def get_options_data(symbol, current_price):
     try:
         tk = yf.Ticker(symbol)
         exps = tk.options
         if not exps: return None
         
-        nearest_date = exps[0]
-        chain = tk.option_chain(nearest_date)
-        calls = chain.calls
-        puts = chain.puts
+        # --- FIX 1: 日期强制排序 ---
+        # 解决 yfinance 返回乱序日期 (如2026在2025前) 的问题
+        sorted_dates = sorted(exps)
         
+        # --- FIX 2: 智能寻找有效流动性日期 ---
+        # 遍历最近的3个日期，寻找第一个有真实成交量的日期
+        # 避免抓取到刚刚上市、几乎没有OI的 Weekly 期权
+        target_date = None
+        calls = pd.DataFrame()
+        puts = pd.DataFrame()
+        
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        
+        for d in sorted_dates:
+            if d < today_str: continue # 过滤过期
+            
+            chain = tk.option_chain(d)
+            c_temp = chain.calls
+            p_temp = chain.puts
+            
+            # 流动性阈值检查：如果行数太少，说明该期权链极不活跃
+            if len(c_temp) + len(p_temp) > 10:
+                target_date = d
+                calls = c_temp
+                puts = p_temp
+                break
+        
+        # 如果所有日期都极度低流动性，强制回退使用第一个未来日期
+        if target_date is None:
+            target_date = sorted_dates[0]
+            chain = tk.option_chain(target_date)
+            calls = chain.calls
+            puts = chain.puts
+            
         if calls.empty or puts.empty: return None
 
-        # --- 关键修正：数据清洗 (Filter) ---
-        # 只关注现价上下 60% 范围内的行权价，过滤掉 $2.0 这种深实值噪音
-        # 如果现价 $14, 则范围约 $5.6 - $22.4，去除了 $2.0 的干扰
-        lower_bound = current_price * 0.4
-        upper_bound = current_price * 1.6
+        # --- FIX 3: 价格区间强力清洗 ---
+        # 只保留现价 ±40% 范围内的行权价，彻底剔除 $2.0/$6.0 等深实值噪音
+        lower_bound = current_price * 0.6
+        upper_bound = current_price * 1.4
         
         calls_clean = calls[(calls['strike'] >= lower_bound) & (calls['strike'] <= upper_bound)]
         puts_clean = puts[(puts['strike'] >= lower_bound) & (puts['strike'] <= upper_bound)]
         
-        # 兜底：如果清洗后没数据，回退使用原始数据
+        # 兜底：如果清洗过猛导致没数据，回退到原始数据
         if calls_clean.empty: calls_clean = calls
         if puts_clean.empty: puts_clean = puts
         # ----------------------------------
         
-        # PCR (使用总量反映整体情绪)
+        # PCR (使用总量)
         total_call_vol = calls['volume'].sum() if not calls.empty else 1
         total_put_vol = puts['volume'].sum() if not puts.empty else 0
         pcr_vol = total_put_vol / total_call_vol
         
-        # Max Pain (使用清洗后的数据)
+        # Max Pain (基于清洗后的核心数据)
         strikes = set(calls_clean['strike']).union(set(puts_clean['strike']))
         min_loss = float('inf'); max_pain = current_price
         
         if strikes:
             for k in strikes:
-                # 简化计算：只计算核心区域痛点
+                # 简化痛点计算
                 call_loss = calls_clean[calls_clean['strike'] < k].apply(lambda x: (k - x['strike']) * x['openInterest'], axis=1).sum()
                 put_loss = puts_clean[puts_clean['strike'] > k].apply(lambda x: (x['strike'] - k) * x['openInterest'], axis=1).sum()
                 total_loss = call_loss + put_loss
                 if total_loss < min_loss: 
                     min_loss = total_loss; max_pain = k
         
-        # Walls (使用清洗后的数据)
+        # Walls (基于清洗后的核心数据)
         if not calls_clean.empty:
             call_wall = calls_clean.loc[calls_clean['openInterest'].idxmax()]['strike']
-        else: call_wall = current_price * 1.1 # Fallback
+        else: call_wall = current_price * 1.1 
             
         if not puts_clean.empty:
             put_wall = puts_clean.loc[puts_clean['openInterest'].idxmax()]['strike']
-        else: put_wall = current_price * 0.9 # Fallback
+        else: put_wall = current_price * 0.9
 
         return {
-            "expiry": nearest_date, "pcr": pcr_vol, "max_pain": max_pain,
+            "expiry": target_date, "pcr": pcr_vol, "max_pain": max_pain,
             "call_wall": call_wall, "put_wall": put_wall,
             "call_vol": total_call_vol, "put_vol": total_put_vol
         }
@@ -410,7 +438,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.4 Fixed"
+        return final_model, factors, "v13.5 Fix"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -621,7 +649,7 @@ def show_live_dashboard():
         turnover_rate = (data['volume'] / (shares_m * 1000000)) * 100
         cols[i].markdown(miner_card_html(p, data['price'], data['pct'], turnover_rate), unsafe_allow_html=True)
     
-    # --- OPTIONS RADAR (UI UNCHANGED, LOGIC FIXED) ---
+    # --- OPTIONS RADAR (LOGIC FIXED: SORT + FILTER) ---
     if opt_data:
         st.markdown("---")
         st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>📡 期权雷达 (Options Flow)</div>", unsafe_allow_html=True)
@@ -770,7 +798,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.4 Fixed | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.5 Fix | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.4 Fixed")
+st.markdown("### ⚡ BTDR 领航员 v13.5 Fix")
 show_live_dashboard()
