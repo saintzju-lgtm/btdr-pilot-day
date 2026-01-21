@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v12.3 Risk-Aware", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v12.4 Ultimate-Fix", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -219,8 +219,7 @@ def calculate_hurst(series):
     return poly[0] * 2.0
 
 @st.cache_data(ttl=300)
-def run_grandmaster_analytics(live_price=None, live_vol=None):
-    # 接收实时价格，修复指标滞后问题
+def run_grandmaster_analytics(live_price=None):
     default_model = {
         "high": {"intercept": 0, "beta_gap": 0.5, "beta_btc": 0.5, "beta_vol": 0},
         "low": {"intercept": 0, "beta_gap": 0.5, "beta_btc": 0.5, "beta_vol": 0},
@@ -239,23 +238,29 @@ def run_grandmaster_analytics(live_price=None, live_vol=None):
         idx = btdr.index.intersection(btc.index).intersection(qqq.index)
         btdr, btc, qqq = btdr.loc[idx], btc.loc[idx], qqq.loc[idx]
         
-        # 关键修正：如果传入了实时价格（且与收盘价偏差大），将其拼接到DataFrame末尾，确保RSI/BOLL反映实时暴跌
-        if live_price and abs(live_price - btdr['Close'].iloc[-1]) / btdr['Close'].iloc[-1] > 0.01:
-            # 创建一行新的Series，使用实时价格
-            new_row = btdr.iloc[-1].copy()
-            new_row['Close'] = live_price
-            new_row['High'] = max(new_row['High'], live_price)
-            new_row['Low'] = min(new_row['Low'], live_price)
-            new_row.name = btdr.index[-1] + timedelta(days=1) # 虚拟的T+1或实时T
-            btdr = pd.concat([btdr, pd.DataFrame([new_row])])
-        
+        # --- 关键修复：插入实时价格行，解决指标滞后问题 ---
+        if live_price and live_price > 0:
+            last_idx = btdr.index[-1]
+            # 只有当实时价格与收盘价差异较大，或者想强制更新指标时使用
+            # 构造新行
+            new_row = pd.DataFrame({
+                'Open': [btdr['Close'].iloc[-1]], # 简化处理，近似昨日收盘
+                'High': [max(btdr['High'].iloc[-1], live_price)],
+                'Low': [min(btdr['Low'].iloc[-1], live_price)],
+                'Close': [live_price],
+                'Volume': [btdr['Volume'].iloc[-1]] # 暂用昨日量占位
+            }, index=[last_idx + timedelta(days=1)])
+            btdr = pd.concat([btdr, new_row])
+
         if len(btdr) < 30: return default_model, default_factors, "Insufficient Data"
 
+        # Correlation Analysis (Use historical data only to avoid skew)
+        btdr_hist = btdr.iloc[:-1] if live_price else btdr
         correlations = {}
         for m in MINER_POOL:
             if m in data:
                 miner_df = data[m]['Close'].pct_change().tail(30)
-                btdr_df = btdr['Close'].pct_change().tail(30)
+                btdr_df = btdr_hist['Close'].pct_change().tail(30)
                 common_idx = miner_df.index.intersection(btdr_df.index)
                 if len(common_idx) > 10: correlations[m] = miner_df.loc[common_idx].corr(btdr_df.loc[common_idx])
                 else: correlations[m] = 0
@@ -270,8 +275,10 @@ def run_grandmaster_analytics(live_price=None, live_vol=None):
         beta_qqq = run_kalman_filter(ret_btdr, ret_qqq, delta=1e-4)
         beta_btc = np.clip(beta_btc, -1, 5); beta_qqq = np.clip(beta_qqq, -1, 4)
 
+        # VWAP (Check for zero volume)
         pv = (btdr['Close'] * btdr['Volume'])
-        vwap_30d = pv.tail(30).sum() / btdr['Volume'].tail(30).sum()
+        vol_sum = btdr['Volume'].tail(30).sum()
+        vwap_30d = pv.tail(30).sum() / vol_sum if vol_sum > 0 else btdr['Close'].mean()
         
         high, low, close = btdr['High'], btdr['Low'], btdr['Close']
         tr = np.maximum(high - low, np.abs(high - close.shift(1)))
@@ -283,12 +290,12 @@ def run_grandmaster_analytics(live_price=None, live_vol=None):
         macd = exp12 - exp26
         signal = macd.ewm(span=9, adjust=False).mean()
         
-        # BOLL
+        # BOLL (Standard SMA20)
         sma20 = close.rolling(window=20).mean()
         std20 = close.rolling(window=20).std()
         boll_u = sma20 + (std20 * 2)
         boll_l = sma20 - (std20 * 2)
-        boll_m = sma20
+        boll_m = sma20 # This is the Median Line user requested
         
         # ADX
         up, down = high.diff(), -low.diff()
@@ -312,17 +319,21 @@ def run_grandmaster_analytics(live_price=None, live_vol=None):
         
         regime = "Trend" if adx > 25 else ("MeanRev" if hurst < 0.4 else "Chop")
 
+        # Ensure valid BOLL values (handle NaNs from recent calc)
+        bu_val = boll_u.iloc[-1] if not np.isnan(boll_u.iloc[-1]) else close.iloc[-1] * 1.05
+        bl_val = boll_l.iloc[-1] if not np.isnan(boll_l.iloc[-1]) else close.iloc[-1] * 0.95
+        bm_val = boll_m.iloc[-1] if not np.isnan(boll_m.iloc[-1]) else close.iloc[-1]
+
         factors = {
             "beta_btc": beta_btc, "beta_qqq": beta_qqq, "vwap": vwap_30d, 
             "adx": adx, "regime": regime, "rsi": rsi, 
             "vol_base": vol_base, "atr_ratio": atr_ratio, "hurst": hurst,
             "macd": macd.iloc[-1], "macd_sig": signal.iloc[-1], 
-            "boll_u": boll_u.iloc[-1], "boll_l": boll_l.iloc[-1], "boll_m": boll_m.iloc[-1]
+            "boll_u": bu_val, "boll_l": bl_val, "boll_m": bm_val
         }
 
-        # WLS Regression (Use original non-concatenated data for stability)
-        # Drop the artificial row if added
-        if live_price: btdr = btdr.iloc[:-1] 
+        # WLS Regression (Revert to historical only for training)
+        if live_price: btdr = btdr.iloc[:-1]
         
         df_reg = pd.DataFrame()
         df_reg['PrevClose'] = btdr['Close'].shift(1); df_reg['Open'] = btdr['Open']
@@ -347,7 +358,7 @@ def run_grandmaster_analytics(live_price=None, live_vol=None):
             "ensemble_mom_h": df_reg['Target_High'].tail(3).max(), "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": top_peers
         }
-        return final_model, factors, "v12.3 Risk-Aware"
+        return final_model, factors, "v12.4 Ultimate-Fix"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -377,7 +388,11 @@ def get_signal_recommendation(curr_price, factors, p_low):
     elif rsi > 55: score += 0.5 
     
     # 2. BOLL (Weight 3)
-    bp = (curr_price - factors['boll_l']) / (factors['boll_u'] - factors['boll_l']) if (factors['boll_u'] - factors['boll_l']) != 0 else 0.5
+    # 修复：防止除以零
+    range_boll = factors['boll_u'] - factors['boll_l']
+    if range_boll == 0: range_boll = 0.01
+    
+    bp = (curr_price - factors['boll_l']) / range_boll
     if bp < 0: score += 3; reasons.append("跌破下轨(超跌)")
     elif bp > 1: score -= 3; reasons.append("突破上轨(超涨)")
     elif bp < 0.2: score += 1; reasons.append("接近下轨支撑")
@@ -388,10 +403,12 @@ def get_signal_recommendation(curr_price, factors, p_low):
     if macd_hist > 0 and factors['macd'] > 0: score += 1.5; reasons.append("MACD多头")
     elif macd_hist < 0 and factors['macd'] < 0: score -= 1.5; reasons.append("MACD空头")
     
-    # 4. Support Check (CRITICAL FIX)
+    # 4. Support Check & Breakdown Logic (Fixing the 0 price bug)
+    support_broken = False
     if curr_price < p_low:
-        score += 1 # Oversold relative to model
+        score += 1 
         reasons.append("击穿理论支撑")
+        support_broken = True
     
     action = "HOLD"; sub_text = "多空均衡，观望为主"
     if score >= 4.5: action = "STRONG BUY"; sub_text = "极度超卖/技术共振，建议买入"
@@ -399,7 +416,7 @@ def get_signal_recommendation(curr_price, factors, p_low):
     elif score <= -4.5: action = "STRONG SELL"; sub_text = "极度超买/风险极高，建议清仓"
     elif score <= -2: action = "REDUCE"; sub_text = "上方阻力较大，逢高减仓"
         
-    return action, " | ".join(reasons[:2]), sub_text, score, macd_hist, bp
+    return action, " | ".join(reasons[:2]), sub_text, score, macd_hist, support_broken
 
 def get_realtime_data():
     tickers_list = "BTC-USD BTDR QQQ ^VIX " + " ".join(MINER_POOL)
@@ -453,23 +470,29 @@ def get_realtime_data():
     except: return None, 50, 0.01, pd.DataFrame()
 
 # --- 6. 绘图函数 (Red=Up, Green=Down) ---
-def draw_kline_chart(df):
+def draw_kline_chart(df, live_price):
     if df.empty: return alt.Chart(pd.DataFrame()).mark_text().encode(text=alt.value("No Data")), ""
     
-    # 1. 计算指标 (Pandas Core)
+    # 1. 计算指标 (Pandas Core) - 加上最新价格防止指标滞后
     df = df.copy()
+    if live_price > 0:
+        new_row = df.iloc[-1].copy()
+        new_row['Close'] = live_price
+        new_row.name = df.index[-1] + timedelta(days=1)
+        df = pd.concat([df, pd.DataFrame([new_row])])
+
     df['MA5'] = df['Close'].rolling(window=5).mean()
-    df['MA20'] = df['Close'].rolling(window=20).mean() # This is BOLL_MID
+    df['BOLL_MID'] = df['Close'].rolling(window=20).mean() # Standard BOLL Median is SMA20
     df['STD20'] = df['Close'].rolling(window=20).std()
-    df['BOLL_U'] = df['MA20'] + 2 * df['STD20']
-    df['BOLL_L'] = df['MA20'] - 2 * df['STD20']
+    df['BOLL_U'] = df['BOLL_MID'] + 2 * df['STD20']
+    df['BOLL_L'] = df['BOLL_MID'] - 2 * df['STD20']
     
     # 2. 构造 Legend HTML
     last = df.iloc[-1]
     legend_html = f"""
     <div class="chart-legend">
         <div class="legend-item"><span class="legend-dot" style="background:#228be6;"></span><span style="color:#228be6;">MA5:</span><span class="legend-val">{last['MA5']:.2f}</span></div>
-        <div class="legend-item"><span class="legend-dot" style="background:#f59f00;"></span><span style="color:#f59f00;">MA20(Mid):</span><span class="legend-val">{last['MA20']:.2f}</span></div>
+        <div class="legend-item"><span class="legend-dot" style="background:#f59f00;"></span><span style="color:#f59f00;">BOLL(Mid):</span><span class="legend-val">{last['BOLL_MID']:.2f}</span></div>
         <div class="legend-item"><span class="legend-dot" style="background:#868e96;"></span><span style="color:#868e96;">BOLL(Up):</span><span class="legend-val">{last['BOLL_U']:.2f}</span></div>
         <div class="legend-item"><span class="legend-dot" style="background:#868e96;"></span><span style="color:#868e96;">BOLL(Low):</span><span class="legend-val">{last['BOLL_L']:.2f}</span></div>
     </div>
@@ -480,26 +503,23 @@ def draw_kline_chart(df):
     
     base = alt.Chart(df).encode(x=alt.X('T:T', axis=alt.Axis(format='%m/%d', title=None)))
     
-    # K线规则: Close > Open => Red (#e03131), Close < Open => Green (#0ca678)
     rule = base.mark_rule().encode(y=alt.Y('Low:Q', scale=alt.Scale(zero=False)), y2='High:Q')
     bar = base.mark_bar(width=6).encode(
         y='Open:Q', y2='Close:Q',
         color=alt.condition("datum.Close >= datum.Open", alt.value("#e03131"), alt.value("#0ca678"))
     )
     
-    # Lines
     line_5 = base.mark_line(color='#228be6', size=1.5).encode(y='MA5:Q')
-    line_20 = base.mark_line(color='#f59f00', size=1.5).encode(y='MA20:Q') # Median
+    line_mid = base.mark_line(color='#f59f00', size=1.5).encode(y='BOLL_MID:Q') 
     line_bu = base.mark_line(color='#adb5bd', strokeDash=[4,2], size=1).encode(y='BOLL_U:Q')
     line_bl = base.mark_line(color='#adb5bd', strokeDash=[4,2], size=1).encode(y='BOLL_L:Q')
     
-    # Volume
     vol = base.mark_bar(opacity=0.3).encode(
         y=alt.Y('Volume:Q', axis=alt.Axis(title='Vol', labels=False, ticks=False)),
         color=alt.condition("datum.Close >= datum.Open", alt.value("#e03131"), alt.value("#0ca678"))
     ).properties(height=60)
     
-    chart = (rule + bar + line_5 + line_20 + line_bu + line_bl).properties(height=240)
+    chart = (rule + bar + line_5 + line_mid + line_bu + line_bl).properties(height=240)
     final_chart = alt.vconcat(chart, vol).resolve_scale(x='shared').interactive()
     
     return final_chart, legend_html
@@ -519,7 +539,11 @@ def show_live_dashboard():
     btc = quotes.get('BTC-USD', {'pct': 0, 'price': 0}); qqq = quotes.get('QQQ', {'pct': 0})
     vix = quotes.get('^VIX', {'price': 20, 'pct': 0}); btdr = quotes.get('BTDR', {'price': 0})
 
-    dist_vwap = ((btdr['price'] - factors['vwap']) / factors['vwap']) * 100 if factors['vwap'] > 0 else 0
+    # VWAP Display Logic
+    vwap_val = factors['vwap']
+    if vwap_val == 0 or np.isnan(vwap_val): vwap_val = btdr['price'] # Fallback
+    dist_vwap = ((btdr['price'] - vwap_val) / vwap_val) * 100
+    
     drift_est = (btc['pct']/100 * factors['beta_btc'] * 0.4) + (qqq['pct']/100 * factors['beta_qqq'] * 0.4)
     if abs(dist_vwap) > 10: drift_est -= (dist_vwap/100) * 0.05
     
@@ -547,13 +571,22 @@ def show_live_dashboard():
     sentiment_adj = (fng_val - 50) * 0.0005; final_h_ret += sentiment_adj; final_l_ret += sentiment_adj
     p_high = btdr['prev'] * (1 + final_h_ret); p_low = btdr['prev'] * (1 + final_l_ret)
 
-    # --- 关键修复：如果现价击穿支撑，则下调买点 ---
+    # 获取信号
+    act, reason, sub, score, macd_h, support_broken = get_signal_recommendation(btdr['price'], factors, p_low)
+
+    # --- 关键修复：击穿修复逻辑 ---
     curr_p = btdr['price']; atr_buffer = live_vol_btdr * 0.6
     
-    if curr_p < p_low:
-        # 击穿模式：支撑失效，寻找更低的布林下轨或恐慌点
-        effective_low = min(p_low, factors['boll_l'])
-        buy_entry = min(effective_low, curr_p * 0.99) # 必须比现价低，防止接飞刀
+    if support_broken:
+        # 击穿模式：寻找下一个支撑（布林下轨）
+        next_support = factors['boll_l']
+        
+        # 如果布林下轨数据异常(0/NaN)或价格已跌穿下轨，使用 ATR 扩展支撑
+        if next_support <= 0.1 or curr_p < next_support:
+            buy_entry = curr_p * 0.98 # 恐慌时挂在现价下方 2%
+        else:
+            buy_entry = next_support # 挂在布林下轨
+            
         support_label_color = "#e03131" # 警示色
         support_label_text = f"${p_low:.2f} (Broken)"
     else:
@@ -561,8 +594,15 @@ def show_live_dashboard():
         support_label_color = "#ffffff"
         support_label_text = f"${p_low:.2f}"
 
-    buy_stop = buy_entry - (live_vol_btdr * 2.5); buy_target = p_high - atr_buffer
+    # 确保买入价有效
+    buy_entry = max(0.01, buy_entry)
+    
+    buy_stop = buy_entry - (live_vol_btdr * 2.5)
+    buy_target = p_high - atr_buffer
+    # R/R 保护
+    if buy_target <= buy_entry: buy_target = buy_entry * 1.05
     buy_rr = (buy_target - buy_entry) / (buy_entry - buy_stop) if (buy_entry - buy_stop) > 0 else 0
+    
     z_buy = (curr_p - buy_entry) / (live_vol_btdr * 8)
     buy_prob = max(min((1 - norm.cdf(z_buy)) * 100 * 2, 95), 5)
     buy_prob_class = "prob-high" if buy_prob > 60 else ("prob-med" if buy_prob > 30 else "prob-low")
@@ -572,9 +612,6 @@ def show_live_dashboard():
     z_sell = (sell_entry - curr_p) / (live_vol_btdr * 8)
     sell_prob = max(min((1 - norm.cdf(z_sell)) * 100 * 2, 95), 5)
     sell_prob_class = "prob-high" if sell_prob > 60 else ("prob-med" if sell_prob > 30 else "prob-low")
-
-    # 获取信号
-    act, reason, sub, score, macd_h, boll_pos = get_signal_recommendation(btdr['price'], factors, p_low)
 
     # --- UI Rendering ---
     st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; AI 模式: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: <b>{ai_status}</b></div>", unsafe_allow_html=True)
@@ -599,7 +636,7 @@ def show_live_dashboard():
     
     st.markdown("### 📈 BTDR K-Line (Daily + BOLL)")
     if not btdr_hist.empty:
-        chart_k, legend_html = draw_kline_chart(btdr_hist)
+        chart_k, legend_html = draw_kline_chart(btdr_hist, btdr['price'])
         st.markdown(legend_html, unsafe_allow_html=True)
         st.altair_chart(chart_k, use_container_width=True)
     else:
@@ -611,7 +648,7 @@ def show_live_dashboard():
     open_label = "今日开盘" if btdr['is_open_today'] else "预计开盘/昨收"
     open_extra = "" if btdr['is_open_today'] else "(Pending)"
     with c4: st.markdown(card_html(open_label, f"${btdr['open']:.2f}", None, 0, open_extra), unsafe_allow_html=True)
-    with c5: st.markdown(card_html("机构成本 (VWAP)", f"${factors['vwap']:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
+    with c5: st.markdown(card_html("机构成本 (VWAP)", f"${vwap_val:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
     tick1, tick2 = st.columns(2)
     with tick1:
@@ -676,7 +713,7 @@ def show_live_dashboard():
     ).properties(height=220)
     st.altair_chart(chart_pdf, use_container_width=True)
     
-    st.caption(f"AI Engine: v12.3 Risk-Aware | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v12.4 Ultimate-Fix | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v12.3 Risk-Aware")
+st.markdown("### ⚡ BTDR 领航员 v12.4 Ultimate-Fix")
 show_live_dashboard()
