@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.2 Scenario", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.3 Scenario", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -121,43 +121,30 @@ CUSTOM_CSS = """
     .dot-night { background-color: #7048e8; box-shadow: 0 0 4px #7048e8; }
     .dot-closed { background-color: #adb5bd; }
     
-    /* Scenario Box */
+    /* NEW Scenario Box */
     .scenario-container {
         display: flex; gap: 10px; margin-top: 10px; margin-bottom: 20px;
     }
     .scenario-box {
-        flex: 1; border-radius: 8px; padding: 10px; text-align: center;
+        flex: 1; border-radius: 8px; padding: 12px 10px; text-align: center;
         border: 1px solid #eee; display: flex; flex-direction: column; justify-content: center;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.03); transition: transform 0.1s;
     }
-    .scen-bull { background: #fff5f5; border-color: #ffc9c9; }
-    .scen-base { background: #f8f9fa; border-color: #e9ecef; }
-    .scen-bear { background: #e6fcf5; border-color: #b2f2bb; }
+    .scenario-box:hover { transform: translateY(-2px); }
     
-    .scen-title { font-size: 0.75rem; font-weight: bold; text-transform: uppercase; margin-bottom: 4px; opacity: 0.7;}
-    .scen-val { font-size: 1.2rem; font-weight: 800; color: #333; }
-    .scen-sub { font-size: 0.7rem; margin-top: 2px; }
+    .scen-bear { background: #e6fcf5; border-color: #b2f2bb; border-top: 4px solid #0ca678; }
+    .scen-base { background: #f8f9fa; border-color: #e9ecef; border-top: 4px solid #adb5bd; }
+    .scen-bull { background: #fff5f5; border-color: #ffc9c9; border-top: 4px solid #e03131; }
     
-    .ticket-card {
-        border-radius: 10px; padding: 15px; margin-bottom: 10px;
-        text-align: left; position: relative; border-left: 5px solid #ccc;
-        background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.05);
-    }
-    .ticket-buy { border-left-color: #0ca678; background: #f0fff4; }
-    .ticket-sell { border-left-color: #e03131; background: #fff5f5; }
+    .scen-title { font-size: 0.75rem; font-weight: bold; text-transform: uppercase; margin-bottom: 4px; opacity: 0.8;}
+    .scen-val { font-size: 1.3rem; font-weight: 800; color: #333; margin-bottom: 2px; }
+    .scen-sub { font-size: 0.7rem; font-weight: 600; }
     
-    .ticket-header { 
-        font-size: 0.9rem; font-weight: 800; letter-spacing: 0.5px; 
-        text-transform: uppercase; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;
-    }
-    .ticket-price-row { display: flex; align-items: baseline; margin-bottom: 8px; }
-    .ticket-price-label { font-size: 0.8rem; color: #555; width: 80px; }
-    .ticket-price-val { font-size: 1.6rem; font-weight: 900; color: #212529; letter-spacing: -0.5px; }
+    .time-bar { font-size: 0.75rem; color: #999; text-align: center; margin-bottom: 20px; padding: 6px; background: #fafafa; border-radius: 6px; }
+    .badge-ai { background: linear-gradient(90deg, #6366f1, #a855f7); color:white; padding:1px 6px; border-radius:3px; font-size:0.6rem; font-weight:bold;}
     
-    .ticket-meta { display: flex; justify-content: space-between; font-size: 0.75rem; margin-top: 8px; color: #666; border-top: 1px solid rgba(0,0,0,0.05); padding-top: 8px; }
-    .prob-container { width: 100%; height: 4px; background: #eee; margin-top: 5px; border-radius: 2px; }
-    .prob-fill { height: 100%; border-radius: 2px; }
-    .prob-high { background: #2f9e44; } .prob-med { background: #fab005; } .prob-low { background: #ced4da; }
-    .tag-smart { background: #228be6; color: white; padding: 1px 5px; border-radius: 4px; font-size: 0.6rem; vertical-align: middle; margin-left: 5px; }
+    /* 强制图表宽度适配 */
+    canvas { width: 100% !important; }
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
@@ -210,31 +197,32 @@ def scenario_html(open_p, atr):
     bear_low = open_p - (atr * 1.5)
     bear_high = open_p - (atr * 0.5)
     
-    base_low = open_p - (atr * 0.8)
-    base_high = open_p + (atr * 0.8)
+    base_low = open_p - (atr * 0.6)
+    base_high = open_p + (atr * 0.6)
     
     bull_low = open_p + (atr * 0.5)
     bull_high = open_p + (atr * 1.5)
     
     return f"""
+    <div style="margin-bottom:5px; font-weight:bold; color:#555;">🎲 今日股价情景推演 (Scenario Forecast)</div>
     <div class="scenario-container">
         <div class="scenario-box scen-bear">
             <div class="scen-title" style="color:#0ca678;">🐻 悲观 (Bear)</div>
             <div class="scen-val" style="color:#0ca678;">${bear_low:.2f}</div>
-            <div class="scen-sub">至 ${bear_high:.2f}</div>
+            <div class="scen-sub">下探至 ${bear_high:.2f}</div>
         </div>
         <div class="scenario-box scen-base">
             <div class="scen-title" style="color:#495057;">⚖️ 中性 (Base)</div>
             <div class="scen-val" style="color:#495057;">${base_low:.2f}</div>
-            <div class="scen-sub">至 ${base_high:.2f}</div>
+            <div class="scen-sub">震荡至 ${base_high:.2f}</div>
         </div>
         <div class="scenario-box scen-bull">
             <div class="scen-title" style="color:#d6336c;">🚀 乐观 (Bull)</div>
             <div class="scen-val" style="color:#d6336c;">${bull_high:.2f}</div>
-            <div class="scen-sub">${bull_low:.2f} 起</div>
+            <div class="scen-sub">上攻至 ${bull_low:.2f}</div>
         </div>
     </div>
-    <div style="text-align:center; font-size:0.7rem; color:#999; margin-top:-10px; margin-bottom:10px;">基于今日开盘价 ${open_p:.2f} 与 ATR 波动率推演</div>
+    <div style="text-align:center; font-size:0.7rem; color:#999; margin-top:-15px; margin-bottom:20px;">基于今日开盘价 ${open_p:.2f} 与 ATR(${atr:.2f}) 波动率推演</div>
     """
 
 # --- 4. 核心计算 ---
@@ -262,7 +250,7 @@ def calculate_hurst(series):
 
 @st.cache_data(ttl=300)
 def run_grandmaster_analytics(live_price=None):
-    default_factors = {"vwap": 0, "adx": 20, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05, "atr_ratio": 0.05, "hurst": 0.5, "macd": 0, "macd_sig": 0, "boll_u": 0, "boll_l": 0, "boll_m": 0}
+    default_factors = {"vwap": 0, "adx": 20, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05, "atr_ratio": 0.05, "hurst": 0.5, "macd": 0, "macd_sig": 0, "boll_u": 0, "boll_l": 0, "boll_m": 0, "atr": 0.5}
 
     try:
         tickers_str = "BTDR BTC-USD QQQ " + " ".join(MINER_POOL)
@@ -327,7 +315,7 @@ def run_grandmaster_analytics(live_price=None):
             "boll_u": boll_u.iloc[-1], "boll_l": boll_l.iloc[-1], "boll_m": sma20.iloc[-1],
             "atr": atr.iloc[-1]
         }
-        return {}, factors, "v13.2 Scenario"
+        return {}, factors, "v13.3 Scenario"
     except Exception as e:
         return {}, default_factors, "Offline"
 
@@ -339,7 +327,7 @@ def determine_market_state(now_ny):
     if 570 <= curr_min < 960: return "Mkt Open", "dot-reg"
     return "Closed", "dot-night"
 
-def get_signal_recommendation(curr_price, factors, p_low):
+def get_signal_recommendation(curr_price, factors):
     score = 0; reasons = []
     
     rsi = factors['rsi']
@@ -355,18 +343,13 @@ def get_signal_recommendation(curr_price, factors, p_low):
     elif bp < 0.2: score += 1; reasons.append("近下轨")
     elif bp > 0.8: score -= 1; reasons.append("近上轨")
 
-    support_broken = False
-    if curr_price < p_low:
-        score += 1; reasons.append("击穿支撑")
-        support_broken = True
-    
     action = "HOLD"; sub_text = "多空均衡"
     if score >= 4: action = "STRONG BUY"; sub_text = "技术共振，建议买入"
     elif score >= 1: action = "ACCUMULATE"; sub_text = "趋势偏多，分批建仓"
     elif score <= -4: action = "STRONG SELL"; sub_text = "风险极高，建议清仓"
     elif score <= -1: action = "REDUCE"; sub_text = "阻力较大，逢高减仓"
         
-    return action, " | ".join(reasons[:2]), sub_text, score, support_broken
+    return action, " | ".join(reasons[:2]), sub_text, score
 
 def get_realtime_data():
     try:
@@ -375,11 +358,13 @@ def get_realtime_data():
             price = t.fast_info['last_price']
             prev = t.fast_info['previous_close']
             vol = 0
+            open_p = t.fast_info['open']
         except:
             h = t.history(period="2d")
             price = h['Close'].iloc[-1]
             prev = h['Close'].iloc[-2]
             vol = h['Volume'].iloc[-1]
+            open_p = h['Open'].iloc[-1]
             
         pct = ((price - prev) / prev) * 100 if prev > 0 else 0
         
@@ -387,7 +372,7 @@ def get_realtime_data():
         hist = t.history(period="6mo")
         hist.index = hist.index.tz_localize(None)
         
-        return {"price": price, "pct": pct, "prev": prev, "open": price, "vol": vol}, 50, 0.05, hist
+        return {"price": price, "pct": pct, "prev": prev, "open": open_p, "vol": vol}, 50, 0.05, hist
     except: return {"price": 0}, 50, 0.05, pd.DataFrame()
 
 # --- 6. 绘图 ---
@@ -444,6 +429,7 @@ def draw_kline_chart(df, live_price):
     line_u = base.mark_line(color='#adb5bd', strokeDash=[4,2]).encode(y='BOLL_U:Q')
     line_l = base.mark_line(color='#adb5bd', strokeDash=[4,2]).encode(y='BOLL_L:Q')
     
+    # CSS width fallback
     return (rule + bar + line_5 + line_m + line_u + line_l).properties(height=300).interactive(), legend_html
 
 # --- 7. Main ---
@@ -466,10 +452,7 @@ def show_live_dashboard():
     # Analytics
     _, factors, ai_status = run_grandmaster_analytics(live_price)
     
-    # Calc Support/Resist for Logic
-    p_low = factors['boll_l'] # Simple base
-    
-    act, reason, sub, score, support_broken = get_signal_recommendation(live_price, factors, p_low)
+    act, reason, sub, score = get_signal_recommendation(live_price, factors)
     
     # UI
     st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; 引擎: <b>{ai_status}</b></div>", unsafe_allow_html=True)
@@ -481,60 +464,11 @@ def show_live_dashboard():
     
     st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
     
-    # New Scenario Analysis Section
-    st.markdown("### 🎲 今日股价情景推演 (Scenario Analysis)")
-    # 使用今日开盘价，如果未知则用昨日收盘
+    # --- NEW: Scenario Analysis (Replaces Tickets) ---
     open_p = quotes['open'] if quotes['open'] > 0 else quotes['prev']
     atr_val = factors['atr'] if not np.isnan(factors['atr']) else live_price * 0.05
     st.markdown(scenario_html(open_p, atr_val), unsafe_allow_html=True)
     
-    st.markdown("---")
-    
-    # Ticket Section (Simplified Logic)
-    curr_p = live_price
-    atr_buffer = atr_val * 0.5
-    
-    if support_broken:
-        buy_entry = curr_p * 0.98
-    else:
-        buy_entry = factors['boll_l'] + atr_buffer
-        
-    buy_stop = buy_entry - (atr_val * 1.5)
-    buy_target = factors['boll_m']
-    
-    sell_entry = factors['boll_u'] - atr_buffer
-    sell_stop = sell_entry + (atr_val * 1.5)
-    sell_target = factors['boll_m']
-    
-    # Calc R/R
-    try:
-        buy_rr = abs(buy_target - buy_entry) / abs(buy_entry - buy_stop)
-        sell_rr = abs(sell_entry - sell_target) / abs(sell_stop - sell_entry)
-    except: buy_rr = 0; sell_rr = 0
-    
-    t1, t2 = st.columns(2)
-    with t1:
-        st.markdown(f"""
-        <div class="ticket-card ticket-buy">
-            <div class="ticket-header" style="color:#0ca678;">🟢 BUY LIMIT</div>
-            <div class="ticket-price-row"><span class="ticket-price-label">挂单</span><span class="ticket-price-val">${buy_entry:.2f}</span></div>
-            <div class="ticket-price-row"><span class="ticket-price-label">止损</span><span class="ticket-price-val" style="color:#e03131;">${buy_stop:.2f}</span></div>
-            <div class="ticket-price-row"><span class="ticket-price-label">目标</span><span class="ticket-price-val" style="color:#1c7ed6;">${buy_target:.2f}</span></div>
-            <div class="ticket-meta"><span>R/R: 1:{buy_rr:.1f}</span></div>
-            <div class="prob-container"><div class="prob-fill prob-med" style="width:60%"></div></div>
-        </div>""", unsafe_allow_html=True)
-        
-    with t2:
-        st.markdown(f"""
-        <div class="ticket-card ticket-sell">
-            <div class="ticket-header" style="color:#e03131;">🔴 SELL LIMIT</div>
-            <div class="ticket-price-row"><span class="ticket-price-label">挂单</span><span class="ticket-price-val">${sell_entry:.2f}</span></div>
-            <div class="ticket-price-row"><span class="ticket-price-label">止损</span><span class="ticket-price-val" style="color:#e03131;">${sell_stop:.2f}</span></div>
-            <div class="ticket-price-row"><span class="ticket-price-label">目标</span><span class="ticket-price-val" style="color:#1c7ed6;">${sell_target:.2f}</span></div>
-            <div class="ticket-meta"><span>R/R: 1:{sell_rr:.1f}</span></div>
-            <div class="prob-container"><div class="prob-fill prob-med" style="width:40%"></div></div>
-        </div>""", unsafe_allow_html=True)
-
     st.markdown("---")
     
     # Chart
@@ -558,5 +492,9 @@ def show_live_dashboard():
     with m3: st.markdown(factor_html("BOLL Pos", f"{pos:.0f}%", "Band", 0, "Position"), unsafe_allow_html=True)
     with m4: st.markdown(factor_html("ATR", f"{atr_val:.2f}", "Vol", 0, "Volatility"), unsafe_allow_html=True)
 
-st.markdown("### ⚡ BTDR 领航员 v13.2 Scenario")
+    # Probability Chart at bottom (Optional, kept for completeness)
+    # st.markdown("### ☁️ 概率推演")
+    # render_probability_chart(live_price, factors['vol_base'])
+
+st.markdown("### ⚡ BTDR 领航员 v13.3 Scenario")
 show_live_dashboard()
