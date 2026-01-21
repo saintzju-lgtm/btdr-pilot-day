@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.1 Final", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.2 Scenario", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -133,26 +133,22 @@ CUSTOM_CSS = """
     .bar-mom { background-color: #fa5252; transition: width 0.5s; }
     .bar-ai { background-color: #be4bdb; transition: width 0.5s; }
     
-    .ticket-card {
-        border-radius: 10px; padding: 15px; margin-bottom: 10px;
-        text-align: left; position: relative; border-left: 5px solid #ccc;
-        background: #fff; box-shadow: 0 2px 5px rgba(0,0,0,0.05);
+    /* Scenario Card Styles (New) */
+    .scen-card {
+        background: #fff; border: 1px solid #eee; border-radius: 8px;
+        padding: 12px; text-align: left; height: 100%; min-height: 110px;
+        border-top: 3px solid #ccc;
+        box-shadow: 0 2px 5px rgba(0,0,0,0.02); display: flex; flex-direction: column; justify-content: center;
     }
-    .ticket-buy { border-left-color: #0ca678; background: #f0fff4; }
-    .ticket-sell { border-left-color: #e03131; background: #fff5f5; }
+    .scen-bull { border-top-color: #0ca678; background: linear-gradient(to bottom, #fff, #f4fdf9); }
+    .scen-base { border-top-color: #fab005; background: linear-gradient(to bottom, #fff, #fffbf0); }
+    .scen-bear { border-top-color: #e03131; background: linear-gradient(to bottom, #fff, #fff5f5); }
     
-    .ticket-header { 
-        font-size: 0.9rem; font-weight: 800; letter-spacing: 0.5px; 
-        text-transform: uppercase; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center;
-    }
-    .ticket-price-row { display: flex; align-items: baseline; margin-bottom: 8px; }
-    .ticket-price-label { font-size: 0.8rem; color: #555; width: 80px; }
-    .ticket-price-val { font-size: 1.6rem; font-weight: 900; color: #212529; letter-spacing: -0.5px; }
-    
-    .ticket-meta { display: flex; justify-content: space-between; font-size: 0.75rem; margin-top: 8px; color: #666; border-top: 1px solid rgba(0,0,0,0.05); padding-top: 8px; }
-    .prob-container { width: 100%; height: 4px; background: #eee; margin-top: 5px; border-radius: 2px; }
-    .prob-fill { height: 100%; border-radius: 2px; }
-    .prob-high { background: #2f9e44; } .prob-med { background: #fab005; } .prob-low { background: #ced4da; }
+    .scen-title { font-size: 0.75rem; font-weight: 700; text-transform: uppercase; margin-bottom: 4px; color: #555; display:flex; justify-content:space-between;}
+    .scen-price { font-size: 1.2rem; font-weight: 800; color: #333; margin-bottom: 2px; }
+    .scen-desc { font-size: 0.7rem; color: #666; line-height: 1.3; }
+    .scen-prob { font-size: 0.65rem; background: rgba(0,0,0,0.05); padding: 1px 4px; border-radius: 3px; }
+
     .tag-smart { background: #228be6; color: white; padding: 1px 5px; border-radius: 4px; font-size: 0.6rem; vertical-align: middle; margin-left: 5px; }
 </style>
 """
@@ -600,7 +596,7 @@ def show_live_dashboard():
 
     act, reason, sub, score, macd_h, support_broken = get_signal_recommendation(btdr['price'], factors, p_low)
 
-    # Buy Limit Logic
+    # Buy Limit Logic (Logic kept for Scenario calcs)
     curr_p = btdr['price']; atr_buffer = live_vol_btdr * 0.6
     
     if support_broken:
@@ -614,28 +610,7 @@ def show_live_dashboard():
         support_label_color = "#ffffff"; support_label_text = f"${p_low:.2f}"
 
     if buy_entry <= 0: buy_entry = curr_p * 0.95
-    buy_stop = buy_entry - (live_vol_btdr * 2.5)
-    buy_target = p_high - atr_buffer
-    if buy_target <= buy_entry: buy_target = buy_entry * 1.05 
     
-    # R/R Calculation
-    buy_rr_risk = abs(buy_entry - buy_stop)
-    buy_rr_reward = abs(buy_target - buy_entry)
-    buy_rr = buy_rr_reward / buy_rr_risk if buy_rr_risk > 0 else 0
-    
-    sell_entry = p_high - atr_buffer; sell_stop = sell_entry + (live_vol_btdr * 2.5); sell_target = p_low + atr_buffer
-    sell_rr_risk = abs(sell_stop - sell_entry)
-    sell_rr_reward = abs(sell_entry - sell_target)
-    sell_rr = sell_rr_reward / sell_rr_risk if sell_rr_risk > 0 else 0
-
-    z_buy = (curr_p - buy_entry) / (live_vol_btdr * 8)
-    buy_prob = max(min((1 - norm.cdf(z_buy)) * 100 * 2, 95), 5)
-    buy_prob_class = "prob-high" if buy_prob > 60 else ("prob-med" if buy_prob > 30 else "prob-low")
-
-    z_sell = (sell_entry - curr_p) / (live_vol_btdr * 8)
-    sell_prob = max(min((1 - norm.cdf(z_sell)) * 100 * 2, 95), 5)
-    sell_prob_class = "prob-high" if sell_prob > 60 else ("prob-med" if sell_prob > 30 else "prob-low")
-
     # --- UI Rendering ---
     st.markdown(f"<div class='time-bar'>美东 {now_ny} &nbsp;|&nbsp; AI 模式: <span class='{badge_class}'>{regime_tag}</span> &nbsp;|&nbsp; 引擎: <b>{ai_status}</b></div>", unsafe_allow_html=True)
     st.markdown(action_banner_html(act, reason, sub), unsafe_allow_html=True)
@@ -673,36 +648,48 @@ def show_live_dashboard():
     with c4: st.markdown(card_html(open_label, f"${btdr['open']:.2f}", None, 0, open_extra), unsafe_allow_html=True)
     with c5: st.markdown(card_html("机构成本 (VWAP)", f"${vwap_val:.2f}", f"{dist_vwap:+.1f}%", dist_vwap), unsafe_allow_html=True)
 
-    tick1, tick2 = st.columns(2)
-    with tick1:
+    # --- SCENARIO ANALYSIS MODULE (REPLACED TICKETS) ---
+    st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>🎯 情景推演 (Scenario Analysis)</div>", unsafe_allow_html=True)
+    
+    sc1, sc2, sc3 = st.columns(3)
+    
+    # Bull Case Logic
+    bull_target = p_high * (1 + live_vol_btdr)
+    bull_prob = "Low" if score < 0 else "Med"
+    with sc1:
         st.markdown(f"""
-        <div class="ticket-card ticket-buy">
-            <div class="ticket-header" style="color:#0ca678;">🟢 BUY LIMIT <span class="tag-smart">SMART</span></div>
-            <div class="ticket-price-row"><span class="ticket-price-label">挂单价</span><span class="ticket-price-val">${buy_entry:.2f}</span></div>
-            <div class="ticket-price-row"><span class="ticket-price-label">止损价</span><span class="ticket-price-val" style="color:#e03131; font-size:1.1rem;">${buy_stop:.2f}</span></div>
-            <div class="ticket-price-row"><span class="ticket-price-label">目标价</span><span class="ticket-price-val" style="color:#1c7ed6; font-size:1.1rem;">${buy_target:.2f}</span></div>
-            <div class="ticket-meta">
-                <span>盈亏比 R/R: <b>1:{buy_rr:.1f}</b></span>
-                <span>成交概率: <b>{buy_prob:.0f}%</b></span>
-            </div>
-            <div class="prob-container"><div class="prob-fill {buy_prob_class}" style="width:{buy_prob}%"></div></div>
-        </div>""", unsafe_allow_html=True)
-    with tick2:
+        <div class="scen-card scen-bull">
+            <div class="scen-title">🐂 Bull Case (Breakout)<span class="scen-prob">{bull_prob}</span></div>
+            <div class="scen-price">${bull_target:.2f}</div>
+            <div class="scen-desc">若突破阻力位 <b>${p_high:.2f}</b>，动能释放看向ATR上轨。</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Base Case Logic
+    with sc2:
         st.markdown(f"""
-        <div class="ticket-card ticket-sell">
-            <div class="ticket-header" style="color:#e03131;">🔴 SELL LIMIT <span class="tag-smart">SMART</span></div>
-            <div class="ticket-price-row"><span class="ticket-price-label">挂单价</span><span class="ticket-price-val">${sell_entry:.2f}</span></div>
-            <div class="ticket-price-row"><span class="ticket-price-label">止损价</span><span class="ticket-price-val" style="color:#e03131; font-size:1.1rem;">${sell_stop:.2f}</span></div>
-            <div class="ticket-price-row"><span class="ticket-price-label">目标价</span><span class="ticket-price-val" style="color:#1c7ed6; font-size:1.1rem;">${sell_target:.2f}</span></div>
-            <div class="ticket-meta">
-                <span>盈亏比 R/R: <b>1:{sell_rr:.1f}</b></span>
-                <span>成交概率: <b>{sell_prob:.0f}%</b></span>
-            </div>
-            <div class="prob-container"><div class="prob-fill {sell_prob_class}" style="width:{sell_prob}%"></div></div>
-        </div>""", unsafe_allow_html=True)
+        <div class="scen-card scen-base">
+            <div class="scen-title">⚖️ Base Case (Range)<span class="scen-prob">High</span></div>
+            <div class="scen-price">${p_low:.2f} - {p_high:.2f}</div>
+            <div class="scen-desc">当前波动率下的震荡区间，围绕VWAP <b>${vwap_val:.2f}</b> 整理。</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+    # Bear Case Logic
+    bear_target = p_low * (1 - live_vol_btdr)
+    bear_prob = "High" if score < -2 else "Low"
+    with sc3:
+        st.markdown(f"""
+        <div class="scen-card scen-bear">
+            <div class="scen-title">🐻 Bear Case (Breakdown)<span class="scen-prob">{bear_prob}</span></div>
+            <div class="scen-price">${bear_target:.2f}</div>
+            <div class="scen-desc">若跌破支撑位 <b>${p_low:.2f}</b>，止损盘触发寻找新低。</div>
+        </div>
+        """, unsafe_allow_html=True)
+    # ---------------------------------------------------
 
     st.markdown(f"""
-    <div style="font-size:0.7rem; color:#888; margin-bottom:2px; display:flex; justify-content:space-between;">
+    <div style="font-size:0.7rem; color:#888; margin-top:10px; margin-bottom:2px; display:flex; justify-content:space-between;">
         <span>🟦 Kalman (30%)</span><span>🟨 History (15%)</span><span>🟥 Momentum (5%)</span><span>🟪 AI Volatility (50%)</span>
     </div>
     <div class="ensemble-bar">
@@ -772,5 +759,5 @@ def show_live_dashboard():
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
     st.caption(f"AI Engine: v13.1 Final | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.1 Final")
+st.markdown("### ⚡ BTDR 领航员 v13.2 Scenario")
 show_live_dashboard()
