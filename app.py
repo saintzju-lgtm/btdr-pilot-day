@@ -10,7 +10,7 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Pilot v13.15 Ultimate", layout="centered")
+st.set_page_config(page_title="BTDR Pilot v13.16 Legend", layout="centered")
 
 CUSTOM_CSS = """
 <style>
@@ -523,7 +523,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.15 Ultimate"
+        return final_model, factors, "v13.16 Legend"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -759,7 +759,6 @@ def show_live_dashboard():
     with m2: st.markdown(card_html("挖矿收益 (Hashprice)", hash_str, "PH/Day", 1, "Est"), unsafe_allow_html=True)
     with m3: st.markdown(card_html("Beta vs BTC", f"{beta_val:.2f}", "High Beta" if beta_val>1.5 else "Low Beta", 1 if beta_val>1 else -1, "30d Kalman"), unsafe_allow_html=True)
     
-    # Macro Insight Box
     macro_t, macro_d = get_macro_insight(hashprice, beta_val)
     st.markdown(f"""
     <div class="intent-box" style="border-left-color: #f76707;">
@@ -769,7 +768,7 @@ def show_live_dashboard():
     <div style="margin-bottom:15px;"></div>
     """, unsafe_allow_html=True)
     
-    # --- NEW: Liquidity & Sentiment (v13.15 Feature) ---
+    # --- NEW: Liquidity & Sentiment (with Guide) ---
     st.markdown("<div style='margin-bottom: 8px; font-weight:bold; font-size:0.9rem;'>🌊 流动性与情绪 (Liquidity & Sentiment)</div>", unsafe_allow_html=True)
     
     # Calculate RVOL
@@ -787,6 +786,22 @@ def show_live_dashboard():
     shares_m = MINER_SHARES.get('BTDR', 100) # BTDR outstanding
     turnover = (btdr['volume'] / (shares_m * 1000000)) * 100
     with l3: st.markdown(card_html("换手率 (Turnover)", f"{turnover:.2f}%", None, 0), unsafe_allow_html=True)
+    
+    # --- NEW: Sentiment Guide ---
+    with st.expander("🌊 如何解读流动性与情绪？(Sentiment Guide)"):
+        st.markdown("""
+        <div style='font-size: 0.85rem; color: #444; line-height: 1.6;'>
+            <b>1. Short Interest (做空比例):</b><br>
+            • <b>>20%:</b> 极高。如果股价上涨，空头将被迫回补，引发<b>“轧空 (Short Squeeze)”</b> 暴涨。<br>
+            • <b><5%:</b> 正常水平，空头压力不大。<br><br>
+            <b>2. RVOL (相对量能):</b><br>
+            • <b>>1.5:</b> 成交量显著放大。若是上涨，说明是<b>机构进场</b>的真突破。<br>
+            • <b><0.8:</b> 缩量整理。市场在观望，假突破概率高。<br><br>
+            <b>3. Turnover (换手率):</b><br>
+            • <b>>5%:</b> 交易极度活跃，通常伴随大波动（日内交易者的天堂）。<br>
+            • <b><1%:</b> 交易清淡，流动性差。
+        </div>
+        """, unsafe_allow_html=True)
     
     st.markdown("---")
     
@@ -968,7 +983,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.15 Ultimate | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.16 Legend | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.15 Ultimate")
+st.markdown("### ⚡ BTDR 领航员 v13.16 Legend")
 show_live_dashboard()
