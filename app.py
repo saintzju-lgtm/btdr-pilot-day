@@ -526,11 +526,6 @@ def show_live_dashboard():
             
     st.markdown("---")
     
-    # 
-
-[Image of neural network processing data]
-
-    
     c3, c4, c5 = st.columns(3)
     status_tag = f"<span class='status-dot {btdr['css']}'></span> <span style='font-size:0.6rem; color:#999'>{btdr['tag']}</span>"
     with c3: st.markdown(card_html("BTDR 现价", f"${btdr['price']:.2f}", f"{btdr['pct']:+.2f}%", btdr['pct'], status_tag), unsafe_allow_html=True)
@@ -658,10 +653,6 @@ def show_live_dashboard():
     with mi4: st.markdown(factor_html("Hurst Exp", f"{factors['hurst']:.2f}", "Fractal", 0, "分形维数：<0.5均值回归，>0.5趋势。"), unsafe_allow_html=True)
     
     st.markdown("### ☁️ 概率推演 (AI Probability)")
-    # 
-
-[Image of probability distribution chart]
-
     
     # 概率密度图 (Bell Curve for Target)
     x_axis = np.linspace(p_low * 0.95, p_high * 1.05, 100)
