@@ -10,11 +10,21 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Command Center v13.27 Sync", layout="centered")
+st.set_page_config(page_title="BTDR Command Center v13.28", layout="centered")
 
-# --- 核心常量锁定 (根据您的截图校准) ---
+# --- 2. 基础配置 (MISSING CONFIG FIXED HERE) ---
+MINER_SHARES = {"MARA": 300, "RIOT": 330, "CLSK": 220, "CORZ": 190, "IREN": 180, "WULF": 410, "CIFR": 300, "HUT": 100}
+MINER_POOL = list(MINER_SHARES.keys())
+
+# --- 核心常量锁定 ---
 LOCKED_FLOAT_SHARES = 121100000 # 1.211亿 (流通股)
 LOCKED_TOTAL_SHARES = 232000000 # 2.32亿 (总股本)
+
+# --- 缓存初始化 ---
+if 'cached_total_shares' not in st.session_state:
+    st.session_state['cached_total_shares'] = LOCKED_TOTAL_SHARES
+if 'cached_float_shares' not in st.session_state:
+    st.session_state['cached_float_shares'] = LOCKED_FLOAT_SHARES
 
 CUSTOM_CSS = """
 <style>
@@ -191,6 +201,45 @@ CUSTOM_CSS = """
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
+# --- 3. 辅助函数 ---
+def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag="", tooltip_text=None):
+    delta_html = ""
+    if delta_str:
+        color_class = "color-up" if delta_val >= 0 else "color-down"
+        delta_html = f"<div class='metric-delta {color_class}'>{delta_str}</div>"
+    
+    tooltip_html = f"<div class='tooltip-text'>{tooltip_text}</div>" if tooltip_text else ""
+    card_class = "metric-card has-tooltip" if tooltip_text else "metric-card"
+    return f"""<div class="{card_class}">{tooltip_html}<div class="metric-label">{label} {extra_tag}</div><div class="metric-value">{value_str}</div>{delta_html}</div>"""
+
+def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=False):
+    is_positive = delta_val >= 0
+    if reverse_color: is_positive = not is_positive
+    color_class = "color-up" if is_positive else "color-down"
+    return f"""<div class="factor-box"><div class="tooltip-text">{tooltip_text}</div><div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {color_class}">{delta_str}</div></div>"""
+
+def miner_card_html(sym, price, pct, turnover):
+    color_class = "color-up" if pct >= 0 else "color-down"
+    return f"""<div class="miner-card"><div class="miner-sym">{sym}</div><div class="miner-price ${color_class}">${price:.2f}</div><div class="miner-sub"><span class="miner-pct {color_class}">{pct:+.1f}%</span><span class="miner-turn">换 {turnover:.1f}%</span></div></div>"""
+
+def action_banner_html(action, reason, sub_text):
+    if action in ["STRONG BUY", "ACCUMULATE", "BUY"]: css_class = "act-buy"; icon = "🚀"
+    elif action in ["STRONG SELL", "REDUCE", "SELL"]: css_class = "act-sell"; icon = "⚠️"
+    else: css_class = "act-hold"; icon = "🛡️"
+        
+    return f"""
+    <div class="action-banner {css_class}">
+        <div style="text-align:left;">
+            <div class="act-title">AI TACTICAL ADVICE</div>
+            <div class="act-main">{icon} {action}</div>
+        </div>
+        <div style="text-align:right; max-width: 60%;">
+            <div style="font-size:0.9rem; font-weight:bold;">{reason}</div>
+            <div class="act-sub">{sub_text}</div>
+        </div>
+    </div>
+    """
+
 # --- 4. 核心计算 (AI & Math Core) ---
 def run_kalman_filter(y, x, delta=1e-4):
     try:
@@ -214,7 +263,7 @@ def calculate_hurst(series):
         return poly[0] * 2.0
     except: return 0.5
 
-# --- FIX: TIME SYNCED OPTIONS FETCH (Crucial Fix) ---
+# --- FIX: TIME SYNCED OPTIONS FETCH ---
 @st.cache_data(ttl=600)
 def get_options_data(symbol, current_price, ref_date=None):
     try:
@@ -223,7 +272,6 @@ def get_options_data(symbol, current_price, ref_date=None):
         if not exps: return None
         
         sorted_dates = sorted(exps)
-        # 1. 使用市场数据的日期作为“今天”，解决时空错乱
         today = ref_date if ref_date else datetime.now()
         if today.tzinfo: today = today.replace(tzinfo=None)
         
@@ -235,8 +283,6 @@ def get_options_data(symbol, current_price, ref_date=None):
         
         for d in sorted_dates:
             d_obj = datetime.strptime(d, '%Y-%m-%d')
-            # 2. 只有当过期很久（比如 >180天）才过滤，保留最近过期的以防数据源延迟
-            # 但为了准确，我们还是过滤掉 ref_date 之前的
             if d_obj < today: continue 
             if d_obj > cutoff_date: break 
             
@@ -495,7 +541,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.27 Sync"
+        return final_model, factors, "v13.28 Final Fix"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -521,6 +567,7 @@ def get_realtime_data():
             last_p = fast.last_price
             if not last_p: last_p = btdr_full['Close'].iloc[-1]
             
+            # Market Cap
             mkt_cap = last_p * shares_total
             
             # 52 Week Range
@@ -531,15 +578,13 @@ def get_realtime_data():
             if not l52 or pd.isna(l52):
                 l52 = btdr_full['Low'].min()
             
-            # Earnings Date Fix - Logic: Find next date AFTER "market today"
-            # We assume market today is the last data point
+            # Earnings Date Fix
             mkt_today = btdr_full.index[-1].date()
-            
             try:
                 cal = btdr_obj.calendar
                 if isinstance(cal, dict) and 'Earnings Date' in cal:
                     dates = cal['Earnings Date']
-                    future = [d for d in dates if d > mkt_today] # Compare with market time
+                    future = [d for d in dates if d > mkt_today]
                     if future: next_earn = future[0].strftime('%Y-%m-%d')
                     else: next_earn = "Est. Mid-May"
                 elif isinstance(cal, pd.DataFrame) and not cal.empty:
@@ -982,7 +1027,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.27 Sync | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.28 Final Fix | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.27 Sync")
+st.markdown("### ⚡ BTDR 领航员 v13.28 Final Fix")
 show_live_dashboard()
