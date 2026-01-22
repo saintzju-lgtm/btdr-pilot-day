@@ -10,13 +10,13 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Command Center v13.29", layout="centered")
+st.set_page_config(page_title="BTDR Command Center v13.30", layout="centered")
 
-# --- 2. 基础配置 (配置必须保留！) ---
+# --- 2. 基础配置 ---
 MINER_SHARES = {"MARA": 300, "RIOT": 330, "CLSK": 220, "CORZ": 190, "IREN": 180, "WULF": 410, "CIFR": 300, "HUT": 100}
 MINER_POOL = list(MINER_SHARES.keys())
 
-# --- 核心常量锁定 ---
+# --- 核心常量锁定 (根据您的截图校准) ---
 LOCKED_FLOAT_SHARES = 121100000 # 1.211亿 (流通股)
 LOCKED_TOTAL_SHARES = 232000000 # 2.32亿 (总股本)
 
@@ -191,16 +191,7 @@ CUSTOM_CSS = """
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
-# --- 3. FIX: Enhanced Session for Cloud ---
-def get_session():
-    session = requests.Session()
-    session.headers.update({
-        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
-    })
-    return session
-
-# --- 4. 核心计算 ---
+# --- 4. 核心计算 (AI & Math Core) ---
 def run_kalman_filter(y, x, delta=1e-4):
     try:
         n = len(y)
@@ -226,8 +217,8 @@ def calculate_hurst(series):
 @st.cache_data(ttl=600)
 def get_options_data(symbol, current_price, ref_date=None):
     try:
-        # Use custom session
-        tk = yf.Ticker(symbol, session=get_session())
+        # NO CUSTOM SESSION HERE
+        tk = yf.Ticker(symbol)
         exps = tk.options
         if not exps: return None
         
@@ -302,7 +293,7 @@ def get_options_data(symbol, current_price, ref_date=None):
 @st.cache_data(ttl=3600)
 def get_mining_metrics(btc_price):
     try:
-        # Use requests with session
+        # Standard requests
         diff_resp = requests.get("https://blockchain.info/q/getdifficulty", timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
         if diff_resp.status_code == 200:
             difficulty = float(diff_resp.text)
@@ -383,13 +374,8 @@ def run_grandmaster_analytics(live_price=None):
     default_factors = {"vwap": 0, "adx": 20, "regime": "Neutral", "beta_btc": 1.5, "beta_qqq": 1.2, "rsi": 50, "vol_base": 0.05, "atr_ratio": 0.05, "hurst": 0.5, "macd": 0, "macd_sig": 0, "boll_u": 0, "boll_l": 0, "boll_m": 0}
 
     try:
-        # Use session for yf download
-        yf.pdr_override() # Helper
         tickers_str = "BTDR BTC-USD QQQ " + " ".join(MINER_POOL)
-        
-        # Manually create Tickers to use session
-        data = yf.download(tickers_str, period="6mo", interval="1d", group_by='ticker', threads=True, progress=False, session=get_session())
-        
+        data = yf.download(tickers_str, period="6mo", interval="1d", group_by='ticker', threads=True, progress=False)
         if data.empty: return default_model, default_factors, "No Data"
 
         btdr = data['BTDR'].dropna(); btc = data['BTC-USD'].dropna(); qqq = data['QQQ'].dropna()
@@ -499,7 +485,7 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.29 Cloud Breaker"
+        return final_model, factors, "v13.30 Simplification"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
@@ -547,37 +533,28 @@ def get_signal_recommendation(curr_price, factors, p_low):
         
     return action, " | ".join(reasons[:2]), sub_text, score, macd_hist, support_broken
 
-# --- FIX: CLOUD DATA FETCHING ---
+# --- FIX: CLOUD DATA FETCHING (NO CUSTOM SESSION) ---
 def get_realtime_data():
     tickers_list = "BTC-USD BTDR QQQ ^VIX " + " ".join(MINER_POOL)
     symbols = tickers_list.split()
     
-    # Debug info container
     err_msg = ""
     
     try:
-        session = get_session() # Use cloud-optimized session
-        
-        # 1. Fetch History (1 Year for robustness)
-        # Note: yfinance doesn't accept session in history() yet, it uses requests inside.
-        # But Ticker(session=...) works for other endpoints.
-        # For history, we must rely on standard, but retry if needed.
-        btdr_t = yf.Ticker("BTDR", session=session)
+        # NO CUSTOM SESSION - Let YF Handle
+        btdr_t = yf.Ticker("BTDR")
         btdr_full = btdr_t.history(period="1y", interval="1d")
         
         if btdr_full.empty:
-            # Retry once
             time.sleep(1)
             btdr_full = btdr_t.history(period="1y", interval="1d")
             
         btdr_full.index = btdr_full.index.tz_localize(None)
         
-        # 2. Robust Profile
         try:
             info = btdr_t.info
             fast = btdr_t.fast_info
             
-            # Shares
             shares_total = LOCKED_TOTAL_SHARES
             
             last_p = fast.last_price
@@ -585,18 +562,19 @@ def get_realtime_data():
             
             mkt_cap = (last_p * shares_total) if last_p else 0
             
-            # 52W
             h52 = fast.year_high
             l52 = fast.year_low
             if (not h52 or pd.isna(h52)) and not btdr_full.empty: h52 = btdr_full['High'].max()
             if (not l52 or pd.isna(l52)) and not btdr_full.empty: l52 = btdr_full['Low'].min()
             
-            # Earnings
+            # Time-Synced Earnings Logic
+            mkt_today = btdr_full.index[-1].date() # Crucial fix from v13.27
+            
             try:
                 cal = btdr_t.calendar
                 if isinstance(cal, dict) and 'Earnings Date' in cal:
                     dates = cal['Earnings Date']
-                    future = [d for d in dates if d > datetime.now().date()]
+                    future = [d for d in dates if d > mkt_today]
                     next_earn = future[0].strftime('%Y-%m-%d') if future else "Est. Mid-May"
                 else: next_earn = "Est. Mid-May"
             except: next_earn = "Est. Mid-May"
@@ -614,18 +592,16 @@ def get_realtime_data():
 
         for sym in symbols:
             try:
-                t = yf.Ticker(sym, session=session)
+                t = yf.Ticker(sym)
                 
                 vol = 0
                 price_hist = 0
                 
-                # Priority 1: Info
                 try:
                     i = t.info
                     vol = i.get('regularMarketVolume', 0)
                 except: pass
                 
-                # Priority 2: History (If info failed/zero)
                 if vol == 0:
                     try:
                         hist_day = t.history(period="1d")
@@ -634,7 +610,6 @@ def get_realtime_data():
                             price_hist = hist_day['Close'].iloc[-1]
                     except: pass
 
-                # Price
                 try: 
                     price = t.fast_info['last_price']
                     prev = t.fast_info['previous_close']
@@ -649,7 +624,6 @@ def get_realtime_data():
                 quotes[sym] = {"price": price, "pct": pct, "prev": prev, "open": price, "volume": vol, "tag": state_tag, "css": state_css, "is_open_today": True}
                 
                 if sym == 'BTDR':
-                    # Calculate live volatility if enough data
                     if not btdr_full.empty:
                         live_volatility = btdr_full['Close'].pct_change().std()
                         if np.isnan(live_volatility): live_volatility = 0.05
@@ -892,6 +866,7 @@ def show_live_dashboard():
         <div style="margin-bottom:8px;"></div>
         """, unsafe_allow_html=True)
 
+        # 2. 详细解读 Expander
         with st.expander("💡 它是如何工作的？(实战解读指南)"):
             st.markdown(f"""
             <div style='font-size: 0.85rem; color: #444; line-height: 1.6;'>
@@ -1032,7 +1007,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.29 Cloud Breaker | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.30 Simplification | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.29 Cloud Breaker")
+st.markdown("### ⚡ BTDR 领航员 v13.30 Simplification")
 show_live_dashboard()
