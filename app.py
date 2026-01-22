@@ -10,21 +10,11 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Command Center v13.30", layout="centered")
+st.set_page_config(page_title="BTDR Command Center v13.25", layout="centered")
 
-# --- 2. 基础配置 ---
-MINER_SHARES = {"MARA": 300, "RIOT": 330, "CLSK": 220, "CORZ": 190, "IREN": 180, "WULF": 410, "CIFR": 300, "HUT": 100}
-MINER_POOL = list(MINER_SHARES.keys())
-
-# --- 核心常量锁定 (根据您的截图校准) ---
-LOCKED_FLOAT_SHARES = 121100000 # 1.211亿 (流通股)
-LOCKED_TOTAL_SHARES = 232000000 # 2.32亿 (总股本)
-
-# --- 缓存初始化 ---
-if 'cached_total_shares' not in st.session_state:
-    st.session_state['cached_total_shares'] = LOCKED_TOTAL_SHARES
-if 'cached_float_shares' not in st.session_state:
-    st.session_state['cached_float_shares'] = LOCKED_FLOAT_SHARES
+# --- NEW: 锁定核心常量 (Based on your feedback) ---
+# 这是一个经过人工校对的“真理值”
+LOCKED_FLOAT_SHARES = 121100000 # 1.211亿 (精准对齐主流软件)
 
 CUSTOM_CSS = """
 <style>
@@ -33,6 +23,7 @@ CUSTOM_CSS = """
     .stApp { margin-top: -30px; background-color: #ffffff; }
     div[data-testid="stStatusWidget"] { visibility: hidden; }
     
+    /* Font Fix */
     .metric-card, .miner-card, .factor-box, .action-banner, .intent-box, .scen-card, .time-bar, .chart-legend, .profile-bar {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
         color: #212529 !important;
@@ -42,6 +33,7 @@ CUSTOM_CSS = """
         overflow: hidden !important; border: 1px solid #f8f9fa; border-radius: 8px;
     }
     
+    /* Metric Card */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef;
         border-radius: 12px;
@@ -56,6 +48,7 @@ CUSTOM_CSS = """
     .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
     .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
+    /* Miner Card */
     .miner-card {
         background-color: #fff; border: 1px solid #e9ecef;
         border-radius: 10px; padding: 8px 10px;
@@ -69,6 +62,7 @@ CUSTOM_CSS = """
     .miner-pct { font-weight: 600; }
     .miner-turn { color: #868e96; }
     
+    /* Factor Box */
     .factor-box {
         background: #fff;
         border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
@@ -80,6 +74,7 @@ CUSTOM_CSS = """
     .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; margin: 2px 0; }
     .factor-sub { font-size: 0.7rem; font-weight: 600; }
     
+    /* Action Banner */
     .action-banner {
         padding: 15px; border-radius: 10px; text-align: center; margin-bottom: 20px;
         display: flex; align-items: center; justify-content: space-between;
@@ -92,6 +87,7 @@ CUSTOM_CSS = """
     .act-main { font-size: 2rem; font-weight: 800; letter-spacing: 1px; }
     .act-sub { font-size: 0.8rem; font-weight: 500; opacity: 0.95; }
 
+    /* Chart Legend */
     .chart-legend {
         display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.75rem; color: #555;
         background: #f8f9fa; padding: 6px 10px; border-radius: 6px; margin-bottom: 5px;
@@ -101,6 +97,7 @@ CUSTOM_CSS = """
     .legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
     .legend-val { font-weight: 700; color: #212529; margin-left: 2px; }
 
+    /* Tooltip Core */
     .tooltip-text {
         visibility: hidden;
         width: 180px; background-color: rgba(33, 37, 41, 0.95);
@@ -142,6 +139,7 @@ CUSTOM_CSS = """
     .bar-mom { background-color: #fa5252; transition: width 0.5s; }
     .bar-ai { background-color: #be4bdb; transition: width 0.5s; }
     
+    /* Scenario Card Styles */
     .scen-card {
         background: #fff; border: 1px solid #eee; border-radius: 8px;
         padding: 12px; text-align: left; height: 100%; min-height: 110px;
@@ -159,6 +157,7 @@ CUSTOM_CSS = """
 
     .tag-smart { background: #228be6; color: white; padding: 1px 5px; border-radius: 4px; font-size: 0.6rem; vertical-align: middle; margin-left: 5px; }
     
+    /* Intent Box */
     .intent-box {
         background-color: #fff; border-left: 4px solid #333;
         padding: 12px; margin-top: 8px; border-radius: 6px;
@@ -179,6 +178,7 @@ CUSTOM_CSS = """
         border: 1px solid #eee !important;
     }
     
+    /* Profile Bar - High Contrast */
     .profile-bar {
         display: flex; justify-content: space-around; background: #343a40; color: #fff !important;
         padding: 10px; border-radius: 8px; margin-bottom: 15px; font-size: 0.8rem;
@@ -190,6 +190,49 @@ CUSTOM_CSS = """
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+# --- 2. 基础配置 ---
+MINER_SHARES = {"MARA": 300, "RIOT": 330, "CLSK": 220, "CORZ": 190, "IREN": 180, "WULF": 410, "CIFR": 300, "HUT": 100}
+MINER_POOL = list(MINER_SHARES.keys())
+
+# --- 3. 辅助函数 ---
+def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag="", tooltip_text=None):
+    delta_html = ""
+    if delta_str:
+        color_class = "color-up" if delta_val >= 0 else "color-down"
+        delta_html = f"<div class='metric-delta {color_class}'>{delta_str}</div>"
+    
+    tooltip_html = f"<div class='tooltip-text'>{tooltip_text}</div>" if tooltip_text else ""
+    card_class = "metric-card has-tooltip" if tooltip_text else "metric-card"
+    return f"""<div class="{card_class}">{tooltip_html}<div class="metric-label">{label} {extra_tag}</div><div class="metric-value">{value_str}</div>{delta_html}</div>"""
+
+def factor_html(title, val, delta_str, delta_val, tooltip_text, reverse_color=False):
+    is_positive = delta_val >= 0
+    if reverse_color: is_positive = not is_positive
+    color_class = "color-up" if is_positive else "color-down"
+    return f"""<div class="factor-box"><div class="tooltip-text">{tooltip_text}</div><div class="factor-title">{title}</div><div class="factor-val">{val}</div><div class="factor-sub {color_class}">{delta_str}</div></div>"""
+
+def miner_card_html(sym, price, pct, turnover):
+    color_class = "color-up" if pct >= 0 else "color-down"
+    return f"""<div class="miner-card"><div class="miner-sym">{sym}</div><div class="miner-price ${color_class}">${price:.2f}</div><div class="miner-sub"><span class="miner-pct {color_class}">{pct:+.1f}%</span><span class="miner-turn">换 {turnover:.1f}%</span></div></div>"""
+
+def action_banner_html(action, reason, sub_text):
+    if action in ["STRONG BUY", "ACCUMULATE", "BUY"]: css_class = "act-buy"; icon = "🚀"
+    elif action in ["STRONG SELL", "REDUCE", "SELL"]: css_class = "act-sell"; icon = "⚠️"
+    else: css_class = "act-hold"; icon = "🛡️"
+        
+    return f"""
+    <div class="action-banner {css_class}">
+        <div style="text-align:left;">
+            <div class="act-title">AI TACTICAL ADVICE</div>
+            <div class="act-main">{icon} {action}</div>
+        </div>
+        <div style="text-align:right; max-width: 60%;">
+            <div style="font-size:0.9rem; font-weight:bold;">{reason}</div>
+            <div class="act-sub">{sub_text}</div>
+        </div>
+    </div>
+    """
 
 # --- 4. 核心计算 (AI & Math Core) ---
 def run_kalman_filter(y, x, delta=1e-4):
@@ -215,30 +258,29 @@ def calculate_hurst(series):
     except: return 0.5
 
 @st.cache_data(ttl=600)
-def get_options_data(symbol, current_price, ref_date=None):
+def get_options_data(symbol, current_price):
     try:
-        # NO CUSTOM SESSION HERE
         tk = yf.Ticker(symbol)
         exps = tk.options
         if not exps: return None
         
         sorted_dates = sorted(exps)
-        today = ref_date if ref_date else datetime.now()
-        if today.tzinfo: today = today.replace(tzinfo=None)
-        
+        today = datetime.now()
         cutoff_date = today + timedelta(days=45) 
         
         calls_list = []
         puts_list = []
+        valid_dates = []
         
         for d in sorted_dates:
             d_obj = datetime.strptime(d, '%Y-%m-%d')
-            if d_obj < today: continue 
+            if d_obj < today: continue
             if d_obj > cutoff_date: break 
             
             chain = tk.option_chain(d)
             if not chain.calls.empty: calls_list.append(chain.calls)
             if not chain.puts.empty: puts_list.append(chain.puts)
+            valid_dates.append(d)
             
         if not calls_list or not puts_list: return None 
 
@@ -281,20 +323,23 @@ def get_options_data(symbol, current_price, ref_date=None):
             put_wall = put_oi_map.idxmax()
         else: put_wall = current_price * 0.9
 
-        date_display = f"{len(calls_list) + len(puts_list)} Chains (<45d)"
+        date_display = f"{len(valid_dates)} Exps (<45d)"
 
         return {
             "expiry": date_display, "pcr": pcr_vol, "max_pain": max_pain,
             "call_wall": call_wall, "put_wall": put_wall,
             "call_vol": total_call_vol, "put_vol": total_put_vol
         }
-    except: return None
+    except Exception as e:
+        print(f"Options Error: {e}")
+        return None
 
+# --- NEW: Miner Macro Data & Insight ---
 @st.cache_data(ttl=3600)
 def get_mining_metrics(btc_price):
     try:
-        # Standard requests
-        diff_resp = requests.get("https://blockchain.info/q/getdifficulty", timeout=5, headers={'User-Agent': 'Mozilla/5.0'})
+        diff_url = "https://blockchain.info/q/getdifficulty"
+        diff_resp = requests.get(diff_url, timeout=3)
         if diff_resp.status_code == 200:
             difficulty = float(diff_resp.text)
         else:
@@ -332,6 +377,7 @@ def get_macro_insight(hashprice, beta):
     desc = f"当前 Hashprice ${hashprice:.1f}/PH/Day ({hp_desc})。BTDR Beta {beta:.2f} ({beta_desc})。"
     return title, desc
 
+# --- Intent Engine ---
 def get_mm_intent(price, mp, cw, pw, pcr):
     gap_mp = (price - mp) / price
     
@@ -420,6 +466,7 @@ def run_grandmaster_analytics(live_price=None):
         beta_qqq = run_kalman_filter(ret_btdr, ret_qqq, delta=1e-4)
         beta_btc = np.clip(beta_btc, -1, 5); beta_qqq = np.clip(beta_qqq, -1, 4)
 
+        # Technicals
         close = btdr['Close']
         pv = (close * btdr['Volume'])
         vol_sum = btdr['Volume'].tail(30).sum()
@@ -485,11 +532,12 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.30 Simplification"
+        return final_model, factors, "v13.25 Source Match"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
 
+# --- 5. 实时数据与 AI 引擎 ---
 def determine_market_state(now_ny):
     weekday = now_ny.weekday(); curr_min = now_ny.hour * 60 + now_ny.minute
     if weekday == 5: return "Weekend", "dot-closed"
@@ -533,57 +581,69 @@ def get_signal_recommendation(curr_price, factors, p_low):
         
     return action, " | ".join(reasons[:2]), sub_text, score, macd_hist, support_broken
 
-# --- FIX: CLOUD DATA FETCHING (NO CUSTOM SESSION) ---
+# --- FIX: DATA FETCHING ---
 def get_realtime_data():
     tickers_list = "BTC-USD BTDR QQQ ^VIX " + " ".join(MINER_POOL)
     symbols = tickers_list.split()
-    
-    err_msg = ""
-    
     try:
-        # NO CUSTOM SESSION - Let YF Handle
-        btdr_t = yf.Ticker("BTDR")
-        btdr_full = btdr_t.history(period="1y", interval="1d")
-        
-        if btdr_full.empty:
-            time.sleep(1)
-            btdr_full = btdr_t.history(period="1y", interval="1d")
-            
+        # 1. Fetch History (1 Year for robustness)
+        btdr_full = yf.Ticker("BTDR").history(period="1y", interval="1d")
         btdr_full.index = btdr_full.index.tz_localize(None)
         
+        # 2. Robust Profile Data Fetching
         try:
-            info = btdr_t.info
-            fast = btdr_t.fast_info
+            btdr_obj = yf.Ticker("BTDR")
+            info = btdr_obj.info
+            fast = btdr_obj.fast_info
             
-            shares_total = LOCKED_TOTAL_SHARES
+            # --- Dynamic Shares Logic (Dual Cache) ---
+            # Total Shares (for Mkt Cap)
+            try:
+                shares_total = fast.shares or info.get('sharesOutstanding')
+                if shares_total: st.session_state['cached_total_shares'] = shares_total
+            except: pass
+            
+            # Float Shares (for Turnover) - Fallback to LOCKED constant if API fails
+            try:
+                float_s = info.get('floatShares')
+                if float_s and float_s > 0: 
+                    st.session_state['cached_float_shares'] = float_s
+            except: pass
             
             last_p = fast.last_price
-            if not last_p and not btdr_full.empty: last_p = btdr_full['Close'].iloc[-1]
+            if not last_p: last_p = btdr_full['Close'].iloc[-1]
             
-            mkt_cap = (last_p * shares_total) if last_p else 0
+            # Market Cap
+            mkt_cap = last_p * st.session_state['cached_total_shares']
             
+            # 52 Week Range
             h52 = fast.year_high
             l52 = fast.year_low
-            if (not h52 or pd.isna(h52)) and not btdr_full.empty: h52 = btdr_full['High'].max()
-            if (not l52 or pd.isna(l52)) and not btdr_full.empty: l52 = btdr_full['Low'].min()
+            if not h52 or pd.isna(h52):
+                h52 = btdr_full['High'].max()
+            if not l52 or pd.isna(l52):
+                l52 = btdr_full['Low'].min()
             
-            # Time-Synced Earnings Logic
-            mkt_today = btdr_full.index[-1].date() # Crucial fix from v13.27
-            
+            # Earnings Date Fix
             try:
-                cal = btdr_t.calendar
+                cal = btdr_obj.calendar
                 if isinstance(cal, dict) and 'Earnings Date' in cal:
                     dates = cal['Earnings Date']
-                    future = [d for d in dates if d > mkt_today]
-                    next_earn = future[0].strftime('%Y-%m-%d') if future else "Est. Mid-May"
-                else: next_earn = "Est. Mid-May"
-            except: next_earn = "Est. Mid-May"
+                    future = [d for d in dates if d > datetime.now().date()]
+                    if future: next_earn = future[0].strftime('%Y-%m-%d')
+                    else: next_earn = "Est. Mid-May"
+                elif isinstance(cal, pd.DataFrame) and not cal.empty:
+                     vals = cal.iloc[0].values
+                     next_earn = str(vals[0])[:10]
+                else:
+                    next_earn = "Est. Mid-May"
+            except:
+                next_earn = "Est. Mid-May"
             
             short_float = info.get('shortPercentOfFloat', 0)
             if short_float is None: short_float = 0
             
-        except Exception as e_prof:
-            err_msg += f"ProfErr: {str(e_prof)} "
+        except: 
             short_float = 0; mkt_cap = 0; h52 = 0; l52 = 0; next_earn = "TBD"
         
         quotes = {}
@@ -594,22 +654,34 @@ def get_realtime_data():
             try:
                 t = yf.Ticker(sym)
                 
+                # --- FIX: Volume Source Priority ---
+                # Priority 1: regularMarketVolume (Matches Broker Apps)
+                # Priority 2: fast_info.last_volume
+                # Priority 3: history 1d
+                
                 vol = 0
                 price_hist = 0
                 
+                # Try fetch info first for regular volume
                 try:
                     i = t.info
                     vol = i.get('regularMarketVolume', 0)
                 except: pass
                 
+                # If info failed or 0, try fast_info
                 if vol == 0:
-                    try:
-                        hist_day = t.history(period="1d")
-                        if not hist_day.empty:
-                            vol = hist_day['Volume'].iloc[-1]
-                            price_hist = hist_day['Close'].iloc[-1]
+                    try: vol = t.fast_info.last_volume
                     except: pass
-
+                
+                # If still 0, try history
+                try:
+                    hist_day = t.history(period="1d")
+                    if not hist_day.empty:
+                        if vol == 0: vol = hist_day['Volume'].iloc[-1]
+                        price_hist = hist_day['Close'].iloc[-1]
+                except: pass
+                
+                # Price Logic
                 try: 
                     price = t.fast_info['last_price']
                     prev = t.fast_info['previous_close']
@@ -624,20 +696,18 @@ def get_realtime_data():
                 quotes[sym] = {"price": price, "pct": pct, "prev": prev, "open": price, "volume": vol, "tag": state_tag, "css": state_css, "is_open_today": True}
                 
                 if sym == 'BTDR':
-                    if not btdr_full.empty:
-                        live_volatility = btdr_full['Close'].pct_change().std()
-                        if np.isnan(live_volatility): live_volatility = 0.05
+                    live_volatility = btdr_full['Close'].pct_change().std()
+                    if np.isnan(live_volatility): live_volatility = 0.05
 
-            except Exception as e_sym:
+            except Exception as e:
                 quotes[sym] = {"price": 0, "pct": 0, "prev": 1, "open": 0, "volume": 0, "tag": "ERR", "css": "dot-closed", "is_open_today": False}
         
-        try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=2).json()['data'][0]['value'])
+        try: fng = int(requests.get("https://api.alternative.me/fng/", timeout=1.0).json()['data'][0]['value'])
         except: fng = 50
         
         profile = {"mkt_cap": mkt_cap, "h52": h52, "l52": l52, "next_earn": next_earn}
-        return quotes, fng, live_volatility, btdr_full, short_float, profile, err_msg
-    except Exception as e_main:
-        return {}, 50, 0.01, pd.DataFrame(), 0, {}, str(e_main)
+        return quotes, fng, live_volatility, btdr_full, short_float, profile
+    except: return {}, 50, 0.01, pd.DataFrame(), 0, {}
 
 # --- 6. 绘图函数 ---
 def draw_kline_chart(df, live_price):
@@ -706,19 +776,17 @@ def show_live_dashboard():
     ai_status = "Init"
     act, reason, sub = "WAIT", "Initializing...", "Please wait"
     
-    # Unpack with error message
-    quotes, fng_val, live_vol_btdr, btdr_hist, short_float, profile, debug_err = get_realtime_data()
+    quotes, fng_val, live_vol_btdr, btdr_hist, short_float, profile = get_realtime_data()
     live_price = quotes.get('BTDR', {}).get('price', 0)
     
     if live_price <= 0:
-        st.error(f"⚠️ 市场数据暂不可用 (API Connection Failed). {debug_err}")
-        if st.button("Retry Connection"): st.rerun()
+        st.warning("⚠️ 市场数据暂不可用 (Market Data Unavailable)")
+        time.sleep(3)
+        st.rerun()
         return
 
     ai_model, factors, ai_status = run_grandmaster_analytics(live_price)
-    
-    last_market_date = btdr_hist.index[-1].replace(tzinfo=None)
-    opt_data = get_options_data('BTDR', live_price, ref_date=last_market_date)
+    opt_data = get_options_data('BTDR', live_price)
     
     # Macro
     btc_p = quotes.get('BTC-USD', {}).get('price', 90000)
@@ -748,14 +816,15 @@ def show_live_dashboard():
         support_label_color = "#ffffff"; support_label_text = f"${p_low:.2f}"
 
     # --- UI Rendering ---
-    mkt_cap_str = f"${profile.get('mkt_cap', 0)/1e9:.2f}B"
-    range_str = f"${profile.get('l52', 0):.2f} - ${profile.get('h52', 0):.2f}"
+    # Top Profile Bar (Fixed)
+    mkt_cap_str = f"${profile['mkt_cap']/1e9:.2f}B" if profile['mkt_cap'] else "N/A"
+    range_str = f"${profile['l52']:.2f} - ${profile['h52']:.2f}" if profile['h52'] else "N/A"
     
     st.markdown(f"""
     <div class="profile-bar">
         <div class="profile-item"><div class="profile-lbl">Market Cap</div><div class="profile-val">{mkt_cap_str}</div></div>
         <div class="profile-item"><div class="profile-lbl">52-Wk Range</div><div class="profile-val">{range_str}</div></div>
-        <div class="profile-item"><div class="profile-lbl">Next Earnings</div><div class="profile-val" style="color:#ffc9c9;">{profile.get('next_earn', 'TBD')}</div></div>
+        <div class="profile-item"><div class="profile-lbl">Next Earnings</div><div class="profile-val" style="color:#ffc9c9;">{profile['next_earn']}</div></div>
     </div>
     """, unsafe_allow_html=True)
     
@@ -810,8 +879,10 @@ def show_live_dashboard():
     with l1: st.markdown(card_html("Short Interest", f"{short_float*100:.2f}%", "Squeeze?" if short_float>0.15 else "Normal", 1 if short_float>0.15 else 0), unsafe_allow_html=True)
     with l2: st.markdown(card_html("RVOL (量比)", f"{rvol:.2f}", "High Vol" if rvol>1.5 else "Low Vol", 1 if rvol>1.5 else 0), unsafe_allow_html=True)
     
-    # Use LOCKED Float Shares for Turnover Calculation
-    turnover = (btdr['volume'] / LOCKED_FLOAT_SHARES) * 100
+    # Dynamic Shares for Turnover (Fixed: Use Float Shares)
+    # Locked Float: 121,100,000 (Based on your feedback)
+    float_shares_final = st.session_state.get('cached_float_shares', LOCKED_FLOAT_SHARES)
+    turnover = (btdr['volume'] / float_shares_final) * 100
     with l3: st.markdown(card_html("换手率 (Turnover)", f"{turnover:.2f}%", None, 0), unsafe_allow_html=True)
     
     with st.expander("🌊 如何解读流动性与情绪？(Sentiment Guide)"):
@@ -857,6 +928,7 @@ def show_live_dashboard():
         </div>
         """, unsafe_allow_html=True)
 
+        # 1. 意图 Box
         i_title, i_desc, i_color = get_mm_intent(btdr['price'], opt_data['max_pain'], opt_data['call_wall'], opt_data['put_wall'], opt_data['pcr'])
         st.markdown(f"""
         <div class="intent-box">
@@ -1007,7 +1079,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.30 Simplification | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.25 Source Match | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.30 Simplification")
+st.markdown("### ⚡ BTDR 领航员 v13.25 Source Match")
 show_live_dashboard()
