@@ -10,21 +10,13 @@ import pytz
 from scipy.stats import norm
 
 # --- 1. 页面配置 & 样式 ---
-st.set_page_config(page_title="BTDR Command Center v13.28", layout="centered")
-
-# --- 2. 基础配置 (MISSING CONFIG FIXED HERE) ---
-MINER_SHARES = {"MARA": 300, "RIOT": 330, "CLSK": 220, "CORZ": 190, "IREN": 180, "WULF": 410, "CIFR": 300, "HUT": 100}
-MINER_POOL = list(MINER_SHARES.keys())
-
-# --- 核心常量锁定 ---
-LOCKED_FLOAT_SHARES = 121100000 # 1.211亿 (流通股)
-LOCKED_TOTAL_SHARES = 232000000 # 2.32亿 (总股本)
+st.set_page_config(page_title="BTDR Command Center v13.24", layout="centered")
 
 # --- 缓存初始化 ---
 if 'cached_total_shares' not in st.session_state:
-    st.session_state['cached_total_shares'] = LOCKED_TOTAL_SHARES
+    st.session_state['cached_total_shares'] = 232000000 
 if 'cached_float_shares' not in st.session_state:
-    st.session_state['cached_float_shares'] = LOCKED_FLOAT_SHARES
+    st.session_state['cached_float_shares'] = 121000000
 
 CUSTOM_CSS = """
 <style>
@@ -33,7 +25,6 @@ CUSTOM_CSS = """
     .stApp { margin-top: -30px; background-color: #ffffff; }
     div[data-testid="stStatusWidget"] { visibility: hidden; }
     
-    /* Font Fix */
     .metric-card, .miner-card, .factor-box, .action-banner, .intent-box, .scen-card, .time-bar, .chart-legend, .profile-bar {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
         color: #212529 !important;
@@ -43,7 +34,6 @@ CUSTOM_CSS = """
         overflow: hidden !important; border: 1px solid #f8f9fa; border-radius: 8px;
     }
     
-    /* Metric Card */
     .metric-card {
         background-color: #f8f9fa; border: 1px solid #e9ecef;
         border-radius: 12px;
@@ -58,7 +48,6 @@ CUSTOM_CSS = """
     .metric-value { font-size: 1.8rem; font-weight: 700; color: #212529; line-height: 1.2; }
     .metric-delta { font-size: 0.9rem; font-weight: 600; margin-top: 2px; }
     
-    /* Miner Card */
     .miner-card {
         background-color: #fff; border: 1px solid #e9ecef;
         border-radius: 10px; padding: 8px 10px;
@@ -72,7 +61,6 @@ CUSTOM_CSS = """
     .miner-pct { font-weight: 600; }
     .miner-turn { color: #868e96; }
     
-    /* Factor Box */
     .factor-box {
         background: #fff;
         border: 1px solid #eee; border-radius: 8px; padding: 6px; text-align: center;
@@ -84,7 +72,6 @@ CUSTOM_CSS = """
     .factor-val { font-size: 1.1rem; font-weight: bold; color: #495057; margin: 2px 0; }
     .factor-sub { font-size: 0.7rem; font-weight: 600; }
     
-    /* Action Banner */
     .action-banner {
         padding: 15px; border-radius: 10px; text-align: center; margin-bottom: 20px;
         display: flex; align-items: center; justify-content: space-between;
@@ -97,7 +84,6 @@ CUSTOM_CSS = """
     .act-main { font-size: 2rem; font-weight: 800; letter-spacing: 1px; }
     .act-sub { font-size: 0.8rem; font-weight: 500; opacity: 0.95; }
 
-    /* Chart Legend */
     .chart-legend {
         display: flex; flex-wrap: wrap; gap: 10px; font-size: 0.75rem; color: #555;
         background: #f8f9fa; padding: 6px 10px; border-radius: 6px; margin-bottom: 5px;
@@ -107,7 +93,6 @@ CUSTOM_CSS = """
     .legend-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
     .legend-val { font-weight: 700; color: #212529; margin-left: 2px; }
 
-    /* Tooltip Core */
     .tooltip-text {
         visibility: hidden;
         width: 180px; background-color: rgba(33, 37, 41, 0.95);
@@ -149,7 +134,6 @@ CUSTOM_CSS = """
     .bar-mom { background-color: #fa5252; transition: width 0.5s; }
     .bar-ai { background-color: #be4bdb; transition: width 0.5s; }
     
-    /* Scenario Card Styles */
     .scen-card {
         background: #fff; border: 1px solid #eee; border-radius: 8px;
         padding: 12px; text-align: left; height: 100%; min-height: 110px;
@@ -167,7 +151,6 @@ CUSTOM_CSS = """
 
     .tag-smart { background: #228be6; color: white; padding: 1px 5px; border-radius: 4px; font-size: 0.6rem; vertical-align: middle; margin-left: 5px; }
     
-    /* Intent Box */
     .intent-box {
         background-color: #fff; border-left: 4px solid #333;
         padding: 12px; margin-top: 8px; border-radius: 6px;
@@ -188,7 +171,6 @@ CUSTOM_CSS = """
         border: 1px solid #eee !important;
     }
     
-    /* Profile Bar */
     .profile-bar {
         display: flex; justify-content: space-around; background: #343a40; color: #fff !important;
         padding: 10px; border-radius: 8px; margin-bottom: 15px; font-size: 0.8rem;
@@ -200,6 +182,10 @@ CUSTOM_CSS = """
 </style>
 """
 st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
+
+# --- 2. 基础配置 ---
+MINER_SHARES = {"MARA": 300, "RIOT": 330, "CLSK": 220, "CORZ": 190, "IREN": 180, "WULF": 410, "CIFR": 300, "HUT": 100}
+MINER_POOL = list(MINER_SHARES.keys())
 
 # --- 3. 辅助函数 ---
 def card_html(label, value_str, delta_str=None, delta_val=0, extra_tag="", tooltip_text=None):
@@ -240,7 +226,7 @@ def action_banner_html(action, reason, sub_text):
     </div>
     """
 
-# --- 4. 核心计算 (AI & Math Core) ---
+# --- 4. 核心计算 ---
 def run_kalman_filter(y, x, delta=1e-4):
     try:
         n = len(y)
@@ -263,18 +249,15 @@ def calculate_hurst(series):
         return poly[0] * 2.0
     except: return 0.5
 
-# --- FIX: TIME SYNCED OPTIONS FETCH ---
 @st.cache_data(ttl=600)
-def get_options_data(symbol, current_price, ref_date=None):
+def get_options_data(symbol, current_price):
     try:
         tk = yf.Ticker(symbol)
         exps = tk.options
         if not exps: return None
         
         sorted_dates = sorted(exps)
-        today = ref_date if ref_date else datetime.now()
-        if today.tzinfo: today = today.replace(tzinfo=None)
-        
+        today = datetime.now()
         cutoff_date = today + timedelta(days=45) 
         
         calls_list = []
@@ -283,7 +266,7 @@ def get_options_data(symbol, current_price, ref_date=None):
         
         for d in sorted_dates:
             d_obj = datetime.strptime(d, '%Y-%m-%d')
-            if d_obj < today: continue 
+            if d_obj < today: continue
             if d_obj > cutoff_date: break 
             
             chain = tk.option_chain(d)
@@ -541,10 +524,54 @@ def run_grandmaster_analytics(live_price=None):
             "ensemble_mom_l": df_reg['Target_Low'].tail(3).min(),
             "top_peers": default_model["top_peers"]
         }
-        return final_model, factors, "v13.28 Final Fix"
+        return final_model, factors, "v13.24 Hotfix"
     except Exception as e:
         print(f"Error: {e}")
         return default_model, default_factors, "Offline"
+
+# --- 5. 实时数据与 AI 引擎 ---
+def determine_market_state(now_ny):
+    weekday = now_ny.weekday(); curr_min = now_ny.hour * 60 + now_ny.minute
+    if weekday == 5: return "Weekend", "dot-closed"
+    if weekday == 6 and now_ny.hour < 20: return "Weekend", "dot-closed"
+    if 240 <= curr_min < 570: return "Pre-Mkt", "dot-pre"
+    if 570 <= curr_min < 960: return "Mkt Open", "dot-reg"
+    if 960 <= curr_min < 1200: return "Post-Mkt", "dot-post"
+    return "Overnight", "dot-night"
+
+def get_signal_recommendation(curr_price, factors, p_low):
+    score = 0; reasons = []
+    
+    rsi = factors['rsi']
+    if rsi < 30: score += 2; reasons.append("RSI超卖")
+    elif rsi > 70: score -= 2; reasons.append("RSI超买")
+    elif rsi > 55: score += 0.5 
+    
+    range_boll = factors['boll_u'] - factors['boll_l']
+    if range_boll <= 0: range_boll = curr_price * 0.05 
+    
+    bp = (curr_price - factors['boll_l']) / range_boll
+    if bp < 0: score += 3; reasons.append("跌破下轨")
+    elif bp > 1: score -= 3; reasons.append("突破上轨")
+    elif bp < 0.2: score += 1; reasons.append("近下轨")
+    elif bp > 0.8: score -= 1; reasons.append("近上轨")
+
+    macd_hist = factors['macd'] - factors['macd_sig']
+    if macd_hist > 0 and factors['macd'] > 0: score += 1.5; reasons.append("MACD多头")
+    elif macd_hist < 0 and factors['macd'] < 0: score -= 1.5; reasons.append("MACD空头")
+    
+    support_broken = False
+    if curr_price < p_low:
+        score += 1; reasons.append("击穿支撑")
+        support_broken = True
+    
+    action = "HOLD"; sub_text = "多空均衡"
+    if score >= 4.5: action = "STRONG BUY"; sub_text = "技术共振，建议买入"
+    elif score >= 2: action = "ACCUMULATE"; sub_text = "趋势偏多，分批建仓"
+    elif score <= -4.5: action = "STRONG SELL"; sub_text = "风险极高，建议清仓"
+    elif score <= -2: action = "REDUCE"; sub_text = "阻力较大，逢高减仓"
+        
+    return action, " | ".join(reasons[:2]), sub_text, score, macd_hist, support_broken
 
 # --- FIX: DATA FETCHING ---
 def get_realtime_data():
@@ -561,30 +588,38 @@ def get_realtime_data():
             info = btdr_obj.info
             fast = btdr_obj.fast_info
             
-            # --- Use Locked Constants ---
-            shares_total = LOCKED_TOTAL_SHARES
+            # --- Dynamic Shares Logic (Dual Cache) ---
+            # Total Shares (for Mkt Cap)
+            try:
+                shares_total = fast.shares or info.get('sharesOutstanding')
+                if shares_total: st.session_state['cached_total_shares'] = shares_total
+            except: pass
+            shares_calc_cap = st.session_state['cached_total_shares']
+            
+            # Float Shares (for Turnover)
+            try:
+                float_shares = info.get('floatShares')
+                if float_shares: st.session_state['cached_float_shares'] = float_shares
+            except: pass
             
             last_p = fast.last_price
             if not last_p: last_p = btdr_full['Close'].iloc[-1]
             
             # Market Cap
-            mkt_cap = last_p * shares_total
+            mkt_cap = last_p * shares_calc_cap
             
             # 52 Week Range
             h52 = fast.year_high
             l52 = fast.year_low
-            if not h52 or pd.isna(h52):
-                h52 = btdr_full['High'].max()
-            if not l52 or pd.isna(l52):
-                l52 = btdr_full['Low'].min()
+            if not h52 or pd.isna(h52): h52 = btdr_full['High'].max()
+            if not l52 or pd.isna(l52): l52 = btdr_full['Low'].min()
             
             # Earnings Date Fix
-            mkt_today = btdr_full.index[-1].date()
             try:
                 cal = btdr_obj.calendar
                 if isinstance(cal, dict) and 'Earnings Date' in cal:
                     dates = cal['Earnings Date']
-                    future = [d for d in dates if d > mkt_today]
+                    future = [d for d in dates if d > datetime.now().date()]
                     if future: next_earn = future[0].strftime('%Y-%m-%d')
                     else: next_earn = "Est. Mid-May"
                 elif isinstance(cal, pd.DataFrame) and not cal.empty:
@@ -608,29 +643,15 @@ def get_realtime_data():
         for sym in symbols:
             try:
                 t = yf.Ticker(sym)
-                
-                # --- FIX: Volume Source Priority ---
-                vol = 0
-                price_hist = 0
-                
-                # Priority 1: Regular Market Volume (Matches Broker)
-                try:
-                    i = t.info
-                    vol = i.get('regularMarketVolume', 0)
-                except: pass
-                
-                # Priority 2: Fast Info
-                if vol == 0:
-                    try: vol = t.fast_info.last_volume
-                    except: pass
-                
-                # Priority 3: History
                 try:
                     hist_day = t.history(period="1d")
                     if not hist_day.empty:
-                        if vol == 0: vol = hist_day['Volume'].iloc[-1]
+                        vol = hist_day['Volume'].iloc[-1]
                         price_hist = hist_day['Close'].iloc[-1]
-                except: pass
+                    else:
+                        vol = 0; price_hist = 0
+                except:
+                    vol = 0; price_hist = 0
                 
                 try: 
                     price = t.fast_info['last_price']
@@ -736,10 +757,7 @@ def show_live_dashboard():
         return
 
     ai_model, factors, ai_status = run_grandmaster_analytics(live_price)
-    
-    # FIX: Pass market data time to align options expiry check
-    last_market_date = btdr_hist.index[-1].replace(tzinfo=None)
-    opt_data = get_options_data('BTDR', live_price, ref_date=last_market_date)
+    opt_data = get_options_data('BTDR', live_price)
     
     # Macro
     btc_p = quotes.get('BTC-USD', {}).get('price', 90000)
@@ -831,8 +849,9 @@ def show_live_dashboard():
     with l1: st.markdown(card_html("Short Interest", f"{short_float*100:.2f}%", "Squeeze?" if short_float>0.15 else "Normal", 1 if short_float>0.15 else 0), unsafe_allow_html=True)
     with l2: st.markdown(card_html("RVOL (量比)", f"{rvol:.2f}", "High Vol" if rvol>1.5 else "Low Vol", 1 if rvol>1.5 else 0), unsafe_allow_html=True)
     
-    # Use LOCKED Float Shares for Turnover Calculation
-    turnover = (btdr['volume'] / LOCKED_FLOAT_SHARES) * 100
+    # Dynamic Shares for Turnover (Fixed: Use Float Shares)
+    float_shares = st.session_state.get('cached_float_shares', 121000000)
+    turnover = (btdr['volume'] / float_shares) * 100
     with l3: st.markdown(card_html("换手率 (Turnover)", f"{turnover:.2f}%", None, 0), unsafe_allow_html=True)
     
     with st.expander("🌊 如何解读流动性与情绪？(Sentiment Guide)"):
@@ -1027,7 +1046,7 @@ def show_live_dashboard():
     l10 = base.mark_line(color='#d6336c', strokeDash=[5,5]).encode(y='P10')
     
     st.altair_chart((area + l90 + l50 + l10).properties(height=220).interactive(), use_container_width=True)
-    st.caption(f"AI Engine: v13.28 Final Fix | Score: {score:.1f} | Signal: {act}")
+    st.caption(f"AI Engine: v13.23 Calibration | Score: {score:.1f} | Signal: {act}")
 
-st.markdown("### ⚡ BTDR 领航员 v13.28 Final Fix")
+st.markdown("### ⚡ BTDR 领航员 v13.23 Calibration")
 show_live_dashboard()
